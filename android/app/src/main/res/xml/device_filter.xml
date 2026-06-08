@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- Mantra MFS100 USB Vendor ID -->
-    <usb-device vendor-id="1204" />
-</resources>
