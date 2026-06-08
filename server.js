@@ -91,7 +91,7 @@ app.use((err, req, res, next) => {
 // ========== START SERVER ==========
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Neofyn Backend running on port ${PORT}`);
+    console.log(`✅ Neofyn Backend running on port http://0.0.0.0:${PORT}`);
     console.log(`📍 Access URL: http://0.0.0.0:${PORT}`);
     console.log(`📋 Available endpoints:`);
     console.log(`   - Health: http://0.0.0.0:${PORT}/`);
