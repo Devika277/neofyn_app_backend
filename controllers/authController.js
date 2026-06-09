@@ -1,6 +1,10 @@
 const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
 const { generateAccessToken, generateRefreshToken } = require('../utils/token');
+// At the top of authRoutes.js
+const protect = require('../middleware/authMiddleware'); // adjust path
+const tpinController = require('../controllers/tpinController'); // adjust path
+
 
 exports.register = async (req, res) => {
   const client = await pool.connect();
