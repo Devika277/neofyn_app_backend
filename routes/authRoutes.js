@@ -4,6 +4,11 @@ const { register, login, forgotPassword, resetPassword } = require('../controlle
 const { authorize } = require('../services/vimoPayService');
 const pool = require('../config/db');
 
+
+// ✅ IMPORT THE MISSING MIDDLEWARE AND CONTROLLER
+const protect = require('../middleware/authMiddleware');   // <-- ADD THIS
+const tpinController = require('../controllers/tpinController');
+
 // Registration Route
 // Points to http://localhost:5000/api/auth/register
 router.post('/register', register);
