@@ -5,13 +5,17 @@ exports.generateAccessToken = (user) => {
     const secret = process.env.JWT_SECRET;
     if (!secret) throw new Error('JWT_SECRET is not set in .env');
 
+    const tpinSet = !!user.tpin;  // or user.tpinSet if passed explicitly
+
     // ✅ Only sign minimal fields — NOT the whole user object
     return jwt.sign(
         {
             id:    user.id,
             email: user.email,
             phone: user.phone,
-            role:  user.role
+            role:  user.role,
+            tpinSet: tpinSet,           // ✅ critical for frontend
+
         },
         secret,
         { expiresIn: '7d' }

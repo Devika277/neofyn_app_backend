@@ -1,12 +1,8 @@
-// controllers/tpinController.js
-
 const pool = require('../config/db');
 const { hashTpin, validateTpin } = require('../utils/tpinHelper');
 const { generateAccessToken } = require('../utils/token');
 
-// -------------------------------------------------------
-// Blacklist of trivially weak TPINs (mirrors old-flow rules)
-// -------------------------------------------------------
+// Weak TPIN blacklist
 const WEAK_TPINS = new Set([
   '000000', '111111', '222222', '333333',
   '444444', '555555', '666666', '777777',
@@ -15,30 +11,26 @@ const WEAK_TPINS = new Set([
 ]);
 
 function validateTpinStrength(tpin) {
-  if (!/^\d{6}$/.test(tpin)) {
-    return 'TPIN must be exactly 6 digits';
-  }
-  if (WEAK_TPINS.has(tpin)) {
-    return 'TPIN is too common. Choose a stronger PIN.';
-  }
-  // All same digit
-  if (/^(\d)\1{5}$/.test(tpin)) {
-    return 'TPIN cannot be all the same digit';
-  }
-  return null; // valid
+  if (!/^\d{6}$/.test(tpin)) return 'TPIN must be exactly 6 digits';
+  if (WEAK_TPINS.has(tpin)) return 'TPIN is too common. Choose a stronger PIN.';
+  if (/^(\d)\1{5}$/.test(tpin)) return 'TPIN cannot be all the same digit';
+  return null;
 }
 
 // -------------------------------------------------------
 // POST /api/auth/set-tpin
-// Sets TPIN for the first time (or replaces an existing one
-// when called from "forgot TPIN" admin reset flow).
-// Body: { newTpin }
 // -------------------------------------------------------
 const setTpin = async (req, res) => {
+  console.log('=== setTpin called ===');
+  console.log('User from token:', req.user);
+
   try {
     const { newTpin } = req.body;
-    const userId = req.user.id;
+    const userId = req.user?.id;
 
+    if (!userId) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
     if (!newTpin) {
       return res.status(400).json({ error: 'newTpin is required' });
     }
@@ -50,14 +42,17 @@ const setTpin = async (req, res) => {
 
     const hashedTpin = hashTpin(newTpin);
 
-    await pool.query(
-      'UPDATE users SET tpin = $1 WHERE id = $2',
-      [hashedTpin, userId]
-    );
+    // Update user's TPIN
+    await pool.query('UPDATE users SET tpin = $1 WHERE id = $2', [hashedTpin, userId]);
 
-    // Re-issue a fresh access token so tpinSet = true immediately
+    // Fetch updated user to generate new token with tpinSet = true
     const userResult = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
     const updatedUser = userResult.rows[0];
+    updatedUser.tpinSet = true;   // force flag for token generation
+
     const newAccessToken = generateAccessToken(updatedUser);
 
     return res.json({
@@ -66,14 +61,14 @@ const setTpin = async (req, res) => {
       accessToken: newAccessToken,
     });
   } catch (err) {
-    console.error('[setTpin]', err.message);
-return res.status(500).json({ error: err.message });  }
+    console.error('[setTpin] ERROR:', err.message);
+    console.error(err.stack);
+    return res.status(500).json({ error: 'Failed to set TPIN: ' + err.message });
+  }
 };
 
 // -------------------------------------------------------
 // POST /api/auth/change-tpin
-// Changes TPIN — requires current TPIN for verification.
-// Body: { currentTpin, newTpin }
 // -------------------------------------------------------
 const changeTpin = async (req, res) => {
   try {
@@ -84,34 +79,25 @@ const changeTpin = async (req, res) => {
       return res.status(400).json({ error: 'currentTpin and newTpin are required' });
     }
 
-    // Verify current TPIN
     const isValid = await validateTpin(userId, currentTpin);
     if (!isValid) {
       return res.status(401).json({ error: 'Current TPIN is incorrect' });
     }
 
-    // Validate new TPIN strength
     const strengthError = validateTpinStrength(newTpin);
     if (strengthError) {
       return res.status(400).json({ error: strengthError });
     }
 
-    // Prevent reusing the same TPIN
     if (currentTpin === newTpin) {
       return res.status(400).json({ error: 'New TPIN must be different from current TPIN' });
     }
 
     const hashedNewTpin = hashTpin(newTpin);
+    await pool.query('UPDATE users SET tpin = $1 WHERE id = $2', [hashedNewTpin, userId]);
 
-    await pool.query(
-      'UPDATE users SET tpin = $1 WHERE id = $2',
-      [hashedNewTpin, userId]
-    );
-
-    return res.json({
-      success: true,
-      message: 'TPIN changed successfully',
-    });
+    // Optionally return a new token with tpinSet still true
+    return res.json({ success: true, message: 'TPIN changed successfully' });
   } catch (err) {
     console.error('[changeTpin]', err.message);
     return res.status(500).json({ error: 'Failed to change TPIN' });
@@ -120,10 +106,6 @@ const changeTpin = async (req, res) => {
 
 // -------------------------------------------------------
 // POST /api/auth/verify-tpin
-// Verify a TPIN (used before sensitive actions — lightweight
-// endpoint for client-side pre-check before submitting a
-// full transaction).
-// Body: { tpin }
 // -------------------------------------------------------
 const verifyTpin = async (req, res) => {
   try {
