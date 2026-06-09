@@ -45,4 +45,9 @@ router.post('/token', async (req, res) => {
   }
 });
 
+
+// Protected TPIN routes
+router.post('/set-tpin', protect, tpinController.setTpin);
+router.post('/change-tpin', protect, tpinController.changeTpin);
+router.post('/verify-tpin', protect, tpinController.verifyTpin);
 module.exports = router;
