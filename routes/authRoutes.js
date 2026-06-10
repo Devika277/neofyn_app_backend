@@ -55,4 +55,11 @@ router.post('/token', async (req, res) => {
 router.post('/set-tpin', protect, tpinController.setTpin);
 router.post('/change-tpin', protect, tpinController.changeTpin);
 router.post('/verify-tpin', protect, tpinController.verifyTpin);
+
+
+// MPIN routes (new)
+router.post('/set-mpin', protect, mpinController.setMpin);
+router.post('/change-mpin', protect, mpinController.changeMpin);
+router.post('/verify-mpin', protect, mpinController.verifyMpin);
+
 module.exports = router;
