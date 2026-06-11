@@ -62,5 +62,6 @@ router.post('/verify-tpin', protect, tpinController.verifyTpin);
 router.post('/set-mpin', protect, mpinController.setMpin);
 router.post('/change-mpin', protect, mpinController.changeMpin);
 router.post('/verify-mpin', protect, mpinController.verifyMpin);
+router.get('/mpin-status', protect, mpinController.getMpinStatus); // <-- ADD THIS
 
 module.exports = router;
