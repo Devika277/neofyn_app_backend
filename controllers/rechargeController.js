@@ -1,363 +1,320 @@
-// neofyn-backend/controllers/rechargeController.js
-const rechargeService = require('../services/recharge/rechargeService');
-const db = require('../config/db'); // adjust path to your db
+// backend/controllers/rechargeController.js
+const rechargeService = require('../services/rechargeService');
+const logger = require('../utils/logger');
+const crypto = require('crypto');
+const db = require('../config/db');
+const walletService = require('../services/walletService');
 
+class RechargeController {
+    /**
+     * POST /api/recharge/process
+     * Handles recharge request with idempotency, test mode, and location data.
+     */
+    async processRecharge(req, res) {
+        try {
+            const userId = req.user.id;
+            const {
+                mobile,
+                operator,
+                serviceType = 'MBL',
+                amount,
+                idempotencyKey,
+                testMode,
+                lat,
+                long
+            } = req.body;
 
-// ─────────────────────────────────────────────
-// GET OPERATOR LIST
-// POST /api/recharge/operators
-// ─────────────────────────────────────────────
-exports.getOperatorList = async (req, res) => {
-    try {
-        const { serviceType = 'MBL' } = req.body;
-        const result = await rechargeService.getOperatorList(serviceType);
-
-        if (!result.success) {
-            return res.status(200).json({
-                success: false,
-                message: result.error || 'Failed to fetch operator list',
-                data: result.data || []
-            });
-        }
-
-        return res.status(200).json({
-            success: true,
-            message: 'Operator list fetched successfully',
-            data: result.data
-        });
-    } catch (error) {
-        console.error('❌ getOperatorList controller error:', error.message);
-        return res.status(500).json({
-            success: false,
-            message: 'Internal server error',
-            data: []
-        });
-    }
-};
-
-// ─────────────────────────────────────────────
-// GET CIRCLE LIST  (static – VimoPay has no circle API)
-// GET /api/recharge/circles
-// ─────────────────────────────────────────────
-exports.getCircleList = async (req, res) => {
-    try {
-        const circles = rechargeService.getCircleList();
-        return res.status(200).json({
-            success: true,
-            message: 'Circle list fetched successfully',
-            data: circles
-        });
-    } catch (error) {
-        console.error('❌ getCircleList controller error:', error.message);
-        return res.status(500).json({ success: false, message: 'Internal server error', data: [] });
-    }
-};
-
-// ─────────────────────────────────────────────
-// GET SERVICE TYPE LIST
-// GET /api/recharge/services
-// ─────────────────────────────────────────────
-exports.getServiceTypeList = async (req, res) => {
-    try {
-        const result = await rechargeService.getServiceTypeList();
-
-        if (!result.success) {
-            return res.status(200).json({
-                success: false,
-                message: result.error || 'Failed to fetch service types',
-                data: result.data || []
-            });
-        }
-
-        return res.status(200).json({
-            success: true,
-            message: 'Service types fetched successfully',
-            data: result.data
-        });
-    } catch (error) {
-        console.error('❌ getServiceTypeList controller error:', error.message);
-        return res.status(500).json({ success: false, message: 'Internal server error', data: [] });
-    }
-};
-
-// ─────────────────────────────────────────────
-// PROCESS RECHARGE
-// POST /api/recharge
-// ─────────────────────────────────────────────
-exports.processRecharge = async (req, res) => {
-    try {
-        const userId = req.user.id;
-
-        const {
-            mobile,          // operatorNumber
-            operatorCode,    // e.g. "JRE", "AIR" – from operator list API
-            serviceType,     // e.g. "MBL", "DTH"
-            amount,
-            merchantRefId,   // unique ref per transaction (idempotency key from Flutter)
-            lat,
-            long,
-            udf1 = '',
-            udf2 = '',
-            udf3 = '',
-            testMode = false
-        } = req.body;
-
-        // ── Basic validation ──────────────────────────────────────────────
-        const missing = [];
-        if (!mobile)        missing.push('mobile');
-        if (!operatorCode)  missing.push('operatorCode');
-        if (!serviceType)   missing.push('serviceType');
-        if (!amount)        missing.push('amount');
-        if (!merchantRefId) missing.push('merchantRefId');
-        if (!lat)           missing.push('lat');
-        if (!long)          missing.push('long');
-
-        if (missing.length > 0) {
-            return res.status(400).json({
-                success: false,
-                message: `Missing required fields: ${missing.join(', ')}`
-            });
-        }
-
-        if (!/^\d{10}$/.test(mobile)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Mobile number must be exactly 10 digits'
-            });
-        }
-
-        const parsedAmount = parseFloat(amount);
-        if (isNaN(parsedAmount) || parsedAmount < 10 || parsedAmount > 10000) {
-            return res.status(400).json({
-                success: false,
-                message: 'Amount must be between ₹10 and ₹10,000'
-            });
-        }
-
-        // ── Call service ──────────────────────────────────────────────────
-        const result = await rechargeService.processRecharge(userId, {
-            mobile,
-            operatorCode,
-            serviceType,
-            amount: parsedAmount,
-            merchantRefId,
-            lat: String(lat),
-            long: String(long),
-            udf1,
-            udf2,
-            udf3,
-            testMode
-        });
-
-        if (!result.success) {
-            return res.status(200).json({
-                success: false,
-                message: result.message || 'Recharge failed',
-                errorCode: result.errorCode || null,
-                data: result.data || null
-            });
-        }
-
-        return res.status(200).json({
-            success: true,
-            message: result.message || 'Recharge initiated successfully',
-            // data: result.data
-                data: {
-        transactionId: result.transactionId,
-        amount: result.amount,
-        mobile: result.mobile,
-        status: 'SUCCESS'
-    }
-        });
-
-    } catch (error) {
-        console.error('❌ processRecharge controller error:', error.message);
-        return res.status(500).json({
-            success: false,
-            message: 'Internal server error'
-        });
-    }
-};
-
-// ─────────────────────────────────────────────
-// HANDLE VIMOPAY CALLBACK
-// POST /api/recharge/callback  (PUBLIC – no auth middleware)
-// VimoPay posts final txn status here
-// ─────────────────────────────────────────────
-exports.handleCallback = async (req, res) => {
-    try {
-        console.log('📩 VimoPay callback received:', JSON.stringify(req.body));
-
-        const {
-            txnId,
-            txnStatus,
-            txnStatusCode,
-            merchantRefId,
-            amount,
-            operatorCode,
-            serviceType,
-            operatorNumber,
-            operatorRefId,
-            commission,
-            finalCommission,
-            tds,
-            lat,
-            long,
-            udf1,
-            udf2,
-            udf3
-        } = req.body;
-
-        // merchantRefId is the primary key we stored during processRecharge
-        if (!merchantRefId) {
-            console.warn('⚠️  Callback missing merchantRefId');
-            return res.status(400).json({
-                successStatus: false,
-                message: 'Missing merchantRefId',
-                responseCode: '003'
-            });
-        }
-
-        // Map VimoPay status codes → internal status
-        // 000 = Success, 001 = Failed, 002 = Pending/InProgress
-        let internalStatus;
-        switch (txnStatusCode) {
-            case '000': internalStatus = 'success';  break;
-            case '001': internalStatus = 'failed';   break;
-            case '002': internalStatus = 'pending';  break;
-            default:    internalStatus = 'pending';
-        }
-
-        await rechargeService.handleCallback({
-            txnId,
-            txnStatus,
-            txnStatusCode,
-            internalStatus,
-            merchantRefId,
-            amount,
-            operatorCode,
-            serviceType,
-            operatorNumber,
-            operatorRefId,
-            commission,
-            finalCommission,
-            tds
-        });
-
-        // VimoPay expects this exact acknowledgement
-        return res.status(200).json({
-            successStatus: true,
-            message: 'Success',
-            responseCode: '000'
-        });
-
-    } catch (error) {
-        console.error('❌ handleCallback controller error:', error.message);
-        // Still return 200 so VimoPay doesn't keep retrying
-        return res.status(200).json({
-            successStatus: true,
-            message: 'Success',
-            responseCode: '000'
-        });
-    }
-};
-
-// ─────────────────────────────────────────────
-// GET RECHARGE HISTORY
-// GET /api/recharge/history
-// ─────────────────────────────────────────────
-exports.getUserHistory = async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const limit  = parseInt(req.query.limit)  || 20;
-        const offset = parseInt(req.query.offset) || 0;
-
-        const result = await rechargeService.getUserHistory(userId, limit, offset);
-
-        return res.status(200).json({
-            success: true,
-            message: 'History fetched successfully',
-            data: result
-        });
-    } catch (error) {
-        console.error('❌ getUserHistory controller error:', error.message);
-        return res.status(500).json({ success: false, message: 'Internal server error', data: [] });
-    }
-};
-
-    // controllers/rechargeController.js (add at the end)
-
-// GET /api/recharge/receipt/:transactionId
-exports.getRechargeReceipt = async (req, res) => {
-    try {
-        const { transactionId } = req.params;
-        const userId = req.user.id; // from auth middleware
-
-        // Fetch the transaction from your database
-        const transaction = await db.query(
-            `SELECT id, user_id, amount, status, merchant_ref_id, operator_code, 
-                    operator_number, created_at, provider_txn_id, commission
-             FROM transactions 
-             WHERE id = $1 AND user_id = $2`,
-            [transactionId, userId]
-        );
-
-        if (transaction.rows.length === 0) {
-            return res.status(404).json({ success: false, message: 'Transaction not found' });
-        }
-
-        const tx = transaction.rows[0];
-
-        // Mask mobile number (show first 3, last 3 digits)
-        const maskedMobile = tx.operator_number 
-            ? tx.operator_number.replace(/(\d{3})\d+(\d{3})/, '$1****$2')
-            : 'N/A';
-
-        // Build receipt object as per RBI guidelines
-        const receipt = {
-            success: true,
-            data: {
-                // Unique identifiers
-                transactionId: tx.id,
-                merchantTransactionId: tx.merchant_ref_id,
-                providerTransactionId: tx.provider_txn_id || 'Not available',
-                
-                // Amount & currency
-                amount: parseFloat(tx.amount).toFixed(2),
-                currency: 'INR',
-                
-                // Customer info (masked)
-                customerMobile: maskedMobile,
-                
-                // Service details
-                operator: tx.operator_code || 'Mobile Recharge',
-                rechargeAmount: parseFloat(tx.amount).toFixed(2),
-                
-                // Date & time
-                dateTime: new Date(tx.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-                timestamp: tx.created_at,
-                
-                // Status
-                status: tx.status.toUpperCase(),
-                
-                // Merchant details (your business)
-                merchantName: 'Neofyn Digital Services',
-                merchantSupport: 'support@neofyn.com | +91 98765 43210',
-                
-                // RBI mandatory disclaimers
-                disclaimers: [
-                    'This transaction has been successfully processed by Neofyn.',
-                    'In case of any discrepancy, please contact customer support within 7 days.',
-                    'Never share your OTP, PIN, or UPI password with anyone.',
-                    'This receipt is system generated and does not require a signature.'
-                ],
-                policyText: 'Refunds, if any, will be processed as per the operator’s refund policy.'
+            // Validation
+            if (!mobile || !operator || !amount) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Missing required fields: mobile, operator, amount'
+                });
             }
-        };
 
-        return res.json(receipt);
-    } catch (error) {
-        console.error('Receipt fetch error:', error);
-        return res.status(500).json({ success: false, message: 'Internal server error' });
+            if (!/^\d{10}$/.test(mobile)) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Invalid mobile number. Must be 10 digits.'
+                });
+            }
+
+            const maxAmount = serviceType === 'ELE' ? 100000 : 10000;
+            if (amount < 10 || amount > maxAmount) {
+                return res.status(400).json({
+                    success: false,
+                    error: `Amount must be between ₹10 and ₹${maxAmount.toLocaleString()}`
+                });
+            }
+
+            logger.info(`RechargeController: Processing recharge for user ${userId}, mobile: ${mobile}`);
+
+            const result = await rechargeService.processRecharge(
+                userId,
+                {
+                    mobile,
+                    operator,
+                    serviceType,
+                    amount: parseFloat(amount),
+                    testMode,
+                    lat,
+                    long
+                },
+                idempotencyKey
+            );
+
+            return res.status(200).json({
+                success: result.success,
+                message: result.message,
+                data: {
+                    transactionId: result.transactionId,
+                    provider: result.provider,
+                    refunded: result.refunded
+                }
+            });
+
+        } catch (error) {
+            logger.error('RechargeController: Error processing recharge', { error: error.message });
+            if (error.message.includes('Insufficient balance')) {
+                return res.status(400).json({ success: false, error: error.message });
+            }
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to process recharge. Please try again.'
+            });
+        }
     }
-};
+
+    /**
+     * GET /api/recharge/history
+     * Returns user's recharge history with pagination.
+     */
+    async getUserHistory(req, res) {
+        try {
+            const userId = req.user.id;
+            const limit = parseInt(req.query.limit) || 50;
+            const offset = parseInt(req.query.offset) || 0;
+            const history = await rechargeService.getUserHistory(userId, limit, offset);
+            return res.status(200).json({
+                success: true,
+                data: history,
+                pagination: { limit, offset, count: history.length }
+            });
+        } catch (error) {
+            logger.error('RechargeController: Error fetching user history', { error: error.message });
+            return res.status(500).json({ success: false, error: 'Failed to fetch recharge history' });
+        }
+    }
+
+    /**
+     * GET /api/recharge/all (admin)
+     * Returns all recharges with filtering and pagination.
+     */
+    async getAllRecharges(req, res) {
+        try {
+            const limit = parseInt(req.query.limit) || 50;
+            const offset = parseInt(req.query.offset) || 0;
+            const filters = {
+                status: req.query.status,
+                operator: req.query.operator,
+                search: req.query.search
+            };
+            const result = await rechargeService.getAllRecharges(filters, limit, offset);
+            return res.status(200).json({
+                success: true,
+                data: result.transactions,
+                pagination: {
+                    limit: result.limit,
+                    offset: result.offset,
+                    total: result.total,
+                    count: result.transactions.length
+                }
+            });
+        } catch (error) {
+            logger.error('RechargeController: Error fetching all recharges', { error: error.message });
+            return res.status(500).json({ success: false, error: 'Failed to fetch recharges' });
+        }
+    }
+
+    /**
+     * POST /api/recharge/callback
+     * Vimopay (or other provider) posts final transaction status here.
+     *
+     * CRITICAL RULES:
+     *   1. ALWAYS return HTTP 200 — otherwise provider retries forever.
+     *   2. Always wrap in try/catch — never crash the response.
+     *   3. Validate merchantRefId exists before using it.
+     *   4. Use lowercase status values only (to match DB CHECK constraint).
+     */
+    async handleCallback(req, res) {
+        // Default ACK – always sent at the end
+        const ack = { successStatus: true, message: 'Success', responseCode: '000' };
+
+        try {
+            const isMock = process.env.PAYMENT_MODE === 'mock';
+
+            // ---------- Mock callback (for testing) ----------
+            if (isMock) {
+                const { txn_id, status, amount, hash } = req.body;
+
+                const secret = process.env.CALLBACK_SECRET;
+                if (!secret) {
+                    logger.error('CALLBACK_SECRET not set in environment');
+                    return res.status(200).json(ack);
+                }
+
+                const expectedHash = crypto
+                    .createHash('md5')
+                    .update(txn_id + amount + secret)
+                    .digest('hex');
+
+                if (hash !== expectedHash) {
+                    logger.warn(`Invalid callback signature for txn ${txn_id}`);
+                    return res.status(200).json(ack);
+                }
+
+                const transaction = await db.query(
+                    'SELECT id, user_id, plan_amount, status FROM transactions WHERE provider_txn_id = $1',
+                    [txn_id]
+                );
+
+                if (transaction.rows.length === 0) {
+                    logger.error(`[MOCK CALLBACK] Transaction not found: ${txn_id}`);
+                    return res.status(200).json(ack);
+                }
+
+                const txn = transaction.rows[0];
+                if (txn.status !== 'pending') {
+                    logger.info(`[MOCK CALLBACK] Already processed: ${txn_id}`);
+                    return res.status(200).json(ack);
+                }
+
+                const newStatus = status === 'success' ? 'success' : 'failed';
+                await db.query(
+                    'UPDATE transactions SET status = $1, updated_at = NOW() WHERE id = $2',
+                    [newStatus, txn.id]
+                );
+
+                if (newStatus === 'failed') {
+                    await walletService.addMoney(
+                        txn.user_id,
+                        txn.plan_amount,
+                        `Refund from callback for transaction ${txn.id}`,
+                        null
+                    );
+                    logger.info(`[MOCK CALLBACK] Refunded ₹${txn.plan_amount} for txn ${txn.id}`);
+                }
+
+                return res.status(200).json(ack);
+            }
+
+            // ---------- Live / Sandbox callback (e.g., Vimopay) ----------
+            const {
+                txnId,
+                txnStatusCode,
+                txnStatus,
+                merchantRefId,
+                amount,
+                operatorRefId,
+                commission,
+                finalCommission,
+                tds
+            } = req.body;
+
+            logger.info('[CALLBACK RECEIVED]', {
+                merchantRefId,
+                txnStatus,
+                txnStatusCode,
+                txnId
+            });
+
+            // Validate required fields
+            if (!txnStatusCode || !merchantRefId) {
+                logger.error('[CALLBACK] Missing required fields', req.body);
+                return res.status(200).json(ack);
+            }
+
+            // ✅ IMPORTANT: Query by merchant_ref_id (the string we sent, e.g., "158")
+            const txnResult = await db.query(
+                `SELECT id, user_id, plan_amount, status
+                 FROM transactions
+                 WHERE merchant_ref_id = $1
+                 LIMIT 1`,
+                [String(merchantRefId)]
+            );
+
+            if (!txnResult.rows || txnResult.rows.length === 0) {
+                logger.error('[CALLBACK] Transaction not found for merchantRefId:', merchantRefId);
+                return res.status(200).json(ack);
+            }
+
+            const row = txnResult.rows[0];
+
+            // Idempotency – skip if already in a final state
+            if (row.status === 'success' || row.status === 'failed') {
+                logger.info('[CALLBACK] Already processed, skipping:', merchantRefId);
+                return res.status(200).json(ack);
+            }
+
+            // Status map (all lowercase to match DB)
+            const statusMap = {
+                '000': 'success',
+                '001': 'failed',
+                '002': 'pending',
+                '003': 'failed',
+                '004': 'pending'
+            };
+            const newStatus = statusMap[txnStatusCode] || 'pending';
+
+            // Update transaction with full callback data
+            await db.query(
+                `UPDATE transactions
+                 SET status          = $1,
+                     provider_txn_id = $2,
+                     api_response    = COALESCE(api_response, '{}'::jsonb) || $3::jsonb,
+                     updated_at      = NOW()
+                 WHERE id = $4`,
+                [
+                    newStatus,
+                    txnId || null,
+                    JSON.stringify({
+                        operatorRefId:   operatorRefId   || null,
+                        commission:      commission      || 0,
+                        finalCommission: finalCommission || 0,
+                        tds:             tds             || 0,
+                        txnStatus:       txnStatus       || null
+                    }),
+                    row.id   // use primary key for safe update
+                ]
+            );
+
+            logger.info(`[CALLBACK] Status updated to: ${newStatus} for txn id: ${row.id}`);
+
+            // Refund wallet on failure
+            if ((txnStatusCode === '001' || txnStatusCode === '003') && row.user_id) {
+                const refundAmount = parseFloat(amount || row.plan_amount || 0);
+                await walletService.addMoney(
+                    row.user_id,
+                    refundAmount,
+                    `Recharge refund - Provider txn ${txnId || merchantRefId}`,
+                    null
+                );
+                logger.info(`[CALLBACK] Refunded ₹${refundAmount} for txn id: ${row.id}`);
+            }
+
+            // (Optional) future commission engine call can be added here
+
+        } catch (error) {
+            // Log everything but NEVER return a non‑200 status
+            logger.error('[CALLBACK] Unhandled error:', error.message);
+            logger.error('[CALLBACK] Stack:', error.stack);
+            logger.error('[CALLBACK] Body was:', JSON.stringify(req.body));
+            // fall through – will return ack below
+        }
+
+        // ALWAYS return 200 OK with the ack object
+        return res.status(200).json(ack);
+    }
+}
+
+module.exports = new RechargeController();
