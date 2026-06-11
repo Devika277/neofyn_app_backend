@@ -1,5 +1,5 @@
 // backend/controllers/rechargeController.js
-const rechargeService = require('../services/rechargeService');
+const rechargeService = require('../services/recharge/rechargeService');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 const db = require('../config/db');
