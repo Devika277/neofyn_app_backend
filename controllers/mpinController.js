@@ -112,3 +112,10 @@ exports.verifyMpin = async (req, res) => {
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
+
+// In mpinController.js
+exports.getMpinStatus = async (req, res) => {
+  const userId = req.user.id;
+  const result = await db.query('SELECT mpin_set FROM users WHERE id = $1', [userId]);
+  res.json({ success: true, mpinSet: result.rows[0]?.mpin_set || false });
+};
