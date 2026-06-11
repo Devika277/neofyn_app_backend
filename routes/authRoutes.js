@@ -3,6 +3,7 @@ const router = express.Router();
 const { register, login, forgotPassword, resetPassword } = require('../controllers/authController');
 const { authorize } = require('../services/vimoPayService');
 const pool = require('../config/db');
+const mpinController = require('../controllers/mpinController'); // <-- ADD THIS
 
 
 // ✅ IMPORT THE MISSING MIDDLEWARE AND CONTROLLER
