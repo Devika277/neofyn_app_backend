@@ -2,10 +2,10 @@
 const axios = require('axios');
 const encryptionService = require('../encryptionService');
 const walletService = require('../recharge/walletService');
-const commissionEngine = require('../recharge/commissionEngine');
+// const commissionEngine = require('../recharge/commissionEngine');
 const db = require('../../config/db');
 const logger = require('../../utils/logger');          // adjust path as needed
-const { processCommission } = require('./commissionService'); // make sure path is correct
+const { processCommission } = require('../Commission/commissionService'); // make sure path is correct
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VimoPay token cache & helpers

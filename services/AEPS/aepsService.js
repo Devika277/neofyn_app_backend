@@ -1,8 +1,8 @@
 const axios = require('axios');
-const encryptionService = require('./encryptionService');
+const encryptionService = require('../encryptionService');
 
 const crypto = require('crypto');
-const mockOtpStore = require('../utils/mockOtpStore');
+const mockOtpStore = require('../../utils/mockOtpStore');
 const MOCK_OTP = process.env.MOCK_OTP === 'true';
 
 const stateToNumericMap = {
