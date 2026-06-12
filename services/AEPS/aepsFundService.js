@@ -1,5 +1,5 @@
-// backend/services/aepsFundService.js
-const db = require('../config/db');
+// backend/services/AEPS/aepsFundService.js
+const db = require('../../config/db');
 const aepsWalletService = require('./aepsWalletService');
 
 // ==============================

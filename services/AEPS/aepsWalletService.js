@@ -1,5 +1,5 @@
 // backend/services/aepsWalletService.js
-const pool = require('../config/db');
+const pool = require('../../config/db');
 
 /**
  * Get AePS wallet by user ID

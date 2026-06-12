@@ -802,7 +802,7 @@
 
 
 // controllers/aepsController.js
-const db = require('../config/db');
+const db = require('../../config/db');
 
 class AepsController {
     /**
