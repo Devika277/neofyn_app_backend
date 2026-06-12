@@ -32,8 +32,8 @@
 const express = require('express');
 const router = express.Router();
 
-const aepsService = require('../services/aepsService');
-const aepsWalletService = require('../services/aepsWalletService');
+const aepsService = require('../services/AEPS/aepsService');
+const aepsWalletService = require('../services/AEPS/aepsWalletService');
 
 const { protect: authenticate } = require('../middleware/authMiddleware');
 const { isAdmin } = require('../middleware/adminMiddleware');
