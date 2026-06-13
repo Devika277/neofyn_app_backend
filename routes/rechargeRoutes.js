@@ -45,8 +45,8 @@ router.use(protect);
 // Master data endpoints (live from VimoPay)
 // These must be implemented in rechargeController (or call service directly)
 // ──────────────────────────────────────────────────────────────────────────
-router.get('/services', rechargeController.getServiceTypeList);
-router.post('/operators', rechargeController.getOperatorList);
+// router.get('/services', rechargeController.getServiceTypeList);
+// router.post('/operators', rechargeController.getOperatorList);
 
 // ❌ /circles endpoint removed – not needed for VimoPay recharge
 
@@ -55,7 +55,7 @@ router.post('/operators', rechargeController.getOperatorList);
 // ──────────────────────────────────────────────────────────────────────────
 router.post('/', rechargeController.processRecharge);
 router.get('/history', rechargeController.getUserHistory);
-router.get('/receipt/:transactionId', rechargeController.getRechargeReceipt);
+// router.get('/receipt/:transactionId', rechargeController.getRechargeReceipt);
 
 // Optional: admin only (you can add admin middleware if needed)
 router.get('/all', rechargeController.getAllRecharges);   // if controller has it
