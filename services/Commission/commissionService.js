@@ -1,4 +1,4 @@
-const pool = require('../config/db');           // ✅ direct pool, no .pool property
+const pool = require('../../config/db');           // ✅ direct pool, no .pool property
 const { getAncestors } = require('./memberService');
 
 /**
