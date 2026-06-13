@@ -5,11 +5,11 @@ const PROVIDER = process.env.AEPS_PROVIDER || 'mock';
 let provider;
 switch (PROVIDER) {
   case 'vimopay':
-    provider = require('../providers/vimopay/vimopayAepsProvider');
+    provider = require('../../providers/vimopayAepsProvider');
     break;
   case 'mock':
   default:
-    provider = require('../providers/mock/mockAepsProvider');
+    provider = require('../../providers/mock/mockAepsProvider');
     break;
 }
 
