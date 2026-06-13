@@ -1,9 +1,9 @@
 const { v4: uuidv4 } = require('uuid');
 const db = require('../../config/db');
-// const aepsProviderRouter = require('./aepsProviderRouter');
+const aepsProviderRouter = require('./aepsProviderRouter');
 const aepsWalletService = require('./aepsWalletService');
 // const aepsLogger = require('../utils/aepsLogger');
-const { processCommission } = require('./commissionService');   // ✅ only commission service
+const { processCommission } = require('../Commission/commissionService');   // ✅ only commission service
 
 // ---------- Bank IIN cache ----------
 const bankIINCache = {
