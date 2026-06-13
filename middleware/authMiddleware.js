@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 
-module.exports = (req, res, next) => {
+const protect = (req, res, next) => {
   const authHeader = req.headers['authorization'];
 
   console.log('=== AUTH MIDDLEWARE ===');
@@ -27,3 +27,4 @@ module.exports = (req, res, next) => {
     return res.status(401).json({ message: 'Token is not valid' });
   }
 };
+module.exports = { protect }; 
