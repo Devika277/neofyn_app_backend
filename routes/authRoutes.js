@@ -7,7 +7,8 @@ const mpinController = require('../controllers/mpinController'); // <-- ADD THIS
 
 
 // ✅ IMPORT THE MISSING MIDDLEWARE AND CONTROLLER
-const protect = require('../middleware/authMiddleware');   // <-- ADD THIS
+// ✅ FIXED: Import protect as a named export
+const { protect } = require('../middleware/authMiddleware');
 const tpinController = require('../controllers/tpinController');
 
 // Registration Route

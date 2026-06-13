@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const protect  = require('../middleware/authMiddleware');
+// ✅ FIXED: Import protect as a named export
+const { protect } = require('../middleware/authMiddleware');
 const adminMiddleware = require('../middleware/adminMiddleware');
 
 // Import controller methods directly — avoids class binding issues

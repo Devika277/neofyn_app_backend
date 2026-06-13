@@ -32,7 +32,8 @@
 const express = require('express');
 const router = express.Router();
 const rechargeController = require('../controllers/rechargeController');
-const protect = require('../middleware/authMiddleware');  // ✅ protect is the auth middleware
+// ✅ FIXED: Import protect as a named export
+const { protect } = require('../middleware/authMiddleware');
 
 // ✅ PUBLIC CALLBACK – must be BEFORE auth middleware
 router.post('/callback', rechargeController.handleCallback);
