@@ -1,5 +1,5 @@
 const pool = require('../../config/db');           // ✅ direct pool, no .pool property
-const { getAncestors } = require('./memberService');
+const { getAncestors } = require('../Members/memberService');
 
 /**
  * Call after every successful transaction.
