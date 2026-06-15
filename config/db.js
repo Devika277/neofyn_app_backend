@@ -1,25 +1,31 @@
 const { Pool } = require('pg');
-require('dotenv').config();
+require('dotenv').config({ path: __dirname + '/../.env' });
 
 let pool = null;
 
-if (!process.env.DATABASE_URL) {
-  console.warn('[db] WARNING: DATABASE_URL not set, skipping DB connection');
-} else {
-  pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: {
-      rejectUnauthorized: false      // Required for Neon (and most cloud PG)
-    }
-  });
+try {
+  if (!process.env.DATABASE_URL) {
+    console.warn('[db] WARNING: DATABASE_URL not set');
+  } else {
+    const isNeon = process.env.DATABASE_URL.includes('neon.tech');
 
-  pool.on('connect', () => {
-    console.log('[db] Connected to database');
-  });
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: isNeon
+        ? { rejectUnauthorized: false }
+        : false
+    });
 
-  pool.on('error', (err) => {
-    console.error('[db] Unexpected error:', err.message);
-  });
+    pool.on('connect', () => {
+      console.log('[db] Database connected successfully');
+    });
+
+    pool.on('error', (err) => {
+      console.error('[db] Unexpected database error:', err.message);
+    });
+  }
+} catch (err) {
+  console.error('[db] Pool creation error:', err.message);
 }
 
 module.exports = pool;
