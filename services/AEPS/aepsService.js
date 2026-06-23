@@ -2,8 +2,9 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../../config/db');
 const aepsProviderRouter = require('./aepsProviderRouter');
 const aepsWalletService = require('./aepsWalletService');
-// const aepsLogger = require('../utils/aepsLogger');
+const aepsLogger = require('../../utils/aepsLogger');
 const { processCommission } = require('../Commission/commissionService');   // ✅ only commission service
+const vimopayAepsProvider = require('../../providers/vimopayAepsProvider');
 
 // ---------- Bank IIN cache ----------
 const bankIINCache = {
@@ -41,35 +42,58 @@ const updateLog = async (clientOrDb, logId, response_payload, response_time_ms, 
 // Merchant Registration (pipe‑aware)
 // ==============================
 
-const getMerchantStatus = async (userId, pipe = '2') => {
-  try {
-    if (!['1', '2', '3'].includes(pipe)) {
-      throw new Error('Invalid pipe value. Must be "1", "2", or "3".');
-    }
+// const getMerchantStatus = async (userId, pipe = '2') => {
+//   try {
+//     if (!['1', '2', '3'].includes(pipe)) {
+//       throw new Error('Invalid pipe value. Must be "1", "2", or "3".');
+//     }
     
-    const result = await db.query(
-      `SELECT merchant_id, registration_status, state_code, district_code, 
-              shop_address, pipe, merchant_ref_id
-       FROM aeps_merchants WHERE user_id = $1 AND pipe = $2`,
-      [userId, pipe]
-    );
-    if (result.rows.length === 0) return { isRegistered: false, pipe };
-    const row = result.rows[0];
-    return {
-      isRegistered:       true,
-      registrationStatus: row.registration_status,
-      merchantId:         row.merchant_id,
-      stateCode:          row.state_code,
-      districtCode:       row.district_code,
-      shopAddress:        row.shop_address,
-      pipe:               row.pipe,
-      merchantRefId:      row.merchant_ref_id,
-    };
-  } catch (error) {
-    console.error('getMerchantStatus error:', error);
-    throw new Error('Failed to get merchant status');
-  }
+//     const result = await db.query(
+//       `SELECT merchant_id, registration_status, state_code, district_code, 
+//               shop_address, pipe, merchant_ref_id
+//        FROM aeps_merchants WHERE user_id = $1 AND pipe = $2`,
+//       [userId, pipe]
+//     );
+//     if (result.rows.length === 0) return { isRegistered: false, pipe };
+//     const row = result.rows[0];
+//     return {
+//       isRegistered:       true,
+//       registrationStatus: row.registration_status,
+//       merchantId:         row.merchant_id,
+//       stateCode:          row.state_code,
+//       districtCode:       row.district_code,
+//       shopAddress:        row.shop_address,
+//       pipe:               row.pipe,
+//       merchantRefId:      row.merchant_ref_id,
+//     };
+//   } catch (error) {
+//     console.error('getMerchantStatus error:', error);
+//     throw new Error('Failed to get merchant status');
+//   }
+// };
+
+
+
+const getAllMerchantStatuses = async (userId) => {
+  const result = await db.query(
+    `SELECT merchant_id, merchant_ref_id, registration_status, pipe,
+            state_code, district_code, shop_address
+     FROM aeps_merchants WHERE user_id = $1`,
+    [userId]
+  );
+  return result.rows.map(row => ({
+    isRegistered: true,
+    merchantId: row.merchant_id,
+    merchantRefId: row.merchant_ref_id,
+    registrationStatus: row.registration_status,
+    pipe: row.pipe,
+    stateCode: row.state_code,
+    districtCode: row.district_code,
+    shopAddress: row.shop_address,
+  }));
 };
+
+
 
 const registerMerchant = async (userId, data) => {
   const {
@@ -412,21 +436,73 @@ const performEkyc = async (userId, pipe, { merchantId, merchantRefId, pidData, d
 // ==============================
 // Daily 2FA (pipe‑aware)
 // ==============================
-const perform2FA = async (userId, pipe, { merchantId, merchantRefId, aadhaarNumber, deviceType, pidData, ipAddress, lat, long }) => {
+// In your aepsProviderRouter.perform2FA function
+// ==============================
+// Daily 2FA (pipe‑aware) - FIXED
+// ==============================
+const perform2FA = async (userId, pipe, params) => {
   const startTime = Date.now();
   let logId = null;
+
   try {
     if (!['1', '2', '3'].includes(pipe)) {
-      throw new Error('Invalid pipe value');
+      throw new Error('Invalid pipe value. Must be "1", "2", or "3".');
     }
-    
+
+    const { merchantId, merchantRefId, aadhaarNumber, deviceType, pidData, lat, long, ipAddress } = params;
+
+    console.log('[AEPS Service] ════════════════════════════════════════════');
+    console.log('[AEPS Service] perform2FA called with:');
+    console.log('[AEPS Service]   userId:', userId);
+    console.log('[AEPS Service]   merchantId:', merchantId);
+    console.log('[AEPS Service]   merchantRefId:', merchantRefId);
+    console.log('[AEPS Service]   aadhaarNumber:', aadhaarNumber ? '****' + aadhaarNumber.slice(-4) : 'NULL');
+    console.log('[AEPS Service]   pipe:', pipe);
+    console.log('[AEPS Service]   deviceType:', deviceType || 'mantra');
+    console.log('[AEPS Service]   pidData length:', pidData ? pidData.length : 0);
+    console.log('[AEPS Service] ════════════════════════════════════════════');
+
+    // Validate required fields
+    if (!merchantId) {
+      throw new Error('merchantId is required');
+    }
+    if (!merchantRefId) {
+      throw new Error('merchantRefId is required');
+    }
+    if (!aadhaarNumber || !/^\d{12}$/.test(aadhaarNumber)) {
+      throw new Error('Valid 12-digit aadhaarNumber is required');
+    }
+    if (!pidData || pidData.length === 0) {
+      throw new Error('pidData (fingerprint data) is required');
+    }
+
+    // Verify merchant exists and belongs to this user
     const merchant = await db.query(
-      'SELECT id FROM aeps_merchants WHERE user_id = $1 AND pipe = $2 AND merchant_id = $3',
+      `SELECT id, merchant_ref_id, registration_status 
+       FROM aeps_merchants 
+       WHERE user_id = $1 AND pipe = $2 AND merchant_id = $3`,
       [userId, pipe, merchantId]
     );
-    if (merchant.rows.length === 0) throw new Error('Merchant not found for this pipe');
+    
+    if (merchant.rows.length === 0) {
+      throw new Error(`No merchant found for pipe ${pipe}. Please complete registration first.`);
+    }
 
-    const requestPayload = { merchantId, merchantRefId, aadhaarNumber, pipe, deviceType, ipAddress, lat, long };
+    console.log('[AEPS Service] ✅ Merchant found in DB:', {
+      dbId: merchant.rows[0].id,
+      status: merchant.rows[0].registration_status,
+    });
+
+    // Log the request
+    const requestPayload = { 
+      merchantId, 
+      merchantRefId, 
+      aadhaarNumber: '****' + aadhaarNumber.slice(-4), 
+      pipe, 
+      deviceType: deviceType || 'mantra', 
+      pidDataLength: pidData.length 
+    };
+    
     logId = await insertPendingLog(db, {
       module: 'aeps',
       merchant_ref_id: merchantRefId,
@@ -435,36 +511,60 @@ const perform2FA = async (userId, pipe, { merchantId, merchantRefId, aadhaarNumb
       request_payload: JSON.stringify(requestPayload),
     });
 
-    const providerResult = await aepsProviderRouter.perform2FA({
-      merchantId, merchantRefId, aadhaarNumber, pipe, deviceType, pidData,
-      lat: lat || '0.0',
-      long: long || '0.0',
+    console.log('[AEPS Service] 📞 Calling vimopayAepsProvider.perform2FA...');
+    
+    // ✅✅✅ FIX: Call the VimoPay provider DIRECTLY (not callVimoPayAPI)
+    const providerResult = await vimopayAepsProvider.perform2FA({
+      merchantId,
+      merchantRefId,
+      aadhaarNumber,
+      pipe,
+      deviceType: deviceType || 'mantra',
+      pidData,
     });
 
+    console.log('[AEPS Service] 📥 Provider response:', {
+      status: providerResult.status,
+      merchantStatus: providerResult.merchantStatus,
+      statusDescription: providerResult.statusDescription,
+      merchantId: providerResult.merchantId,
+      txnRefId: providerResult.txnRefId,
+    });
+
+    // Update last_2fa_at on success
     if (providerResult.status === '000') {
       await db.query(
-        `UPDATE aeps_merchants SET last_2fa_at = NOW() WHERE merchant_id = $1 AND pipe = $2`,
+        `UPDATE aeps_merchants 
+         SET last_2fa_at = NOW(), 
+             registration_status = CASE 
+               WHEN registration_status = 'otp_verified' THEN 'active' 
+               ELSE registration_status 
+             END
+         WHERE merchant_id = $1 AND pipe = $2`,
         [merchantId, pipe]
       );
-
-      // ✅ Deduct ₹3 from AEPS wallet for daily 2FA (only on success)
-      await aepsWalletService.debitAepsWallet(
-        userId,
-        3,
-        'Daily 2FA fee',
-        null,
-        null,
-        null
-      ).catch(err => console.error('2FA fee deduction failed:', err.message));
+      console.log('[AEPS Service] ✅ Updated last_2fa_at for merchant:', merchantId);
     }
 
-    await updateLog(db, logId, JSON.stringify(providerResult), Date.now() - startTime,
-      providerResult.status === '000' ? 'success' : 'failed', 200, null);
+    // Update log
+    await updateLog(
+      db, 
+      logId, 
+      JSON.stringify(providerResult), 
+      Date.now() - startTime,
+      providerResult.status === '000' ? 'success' : 'failed', 
+      200, 
+      null
+    );
 
     return providerResult;
+
   } catch (error) {
-    if (logId) await updateLog(db, logId, null, Date.now() - startTime, 'error', 500, error.message);
-    console.error('perform2FA error:', error);
+    if (logId) {
+      await updateLog(db, logId, null, Date.now() - startTime, 'error', 500, error.message);
+    }
+    console.error('[AEPS Service] ❌ perform2FA error:', error.message);
+    console.error('[AEPS Service] Stack:', error.stack);
     throw error;
   }
 };
@@ -941,8 +1041,12 @@ const getAllMerchants = async () => {
   }
 };
 
+
+
+
+
 module.exports = {
-  getMerchantStatus,
+  getAllMerchantStatuses,
   registerMerchant,
   getBankList,
   getStateList,

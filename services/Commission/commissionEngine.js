@@ -7,7 +7,7 @@
 //         This prevents the nested-transaction deadlock that caused the
 //         idle-in-transaction timeout crash.
 
-const pool = require('../config/db');
+const pool = require('../../config/db');
 
 // ─── CALCULATE: Called after every successful transaction ────────
 async function calculate({ userId, serviceType, providerId, txnAmount, transactionRef }, client = null) {

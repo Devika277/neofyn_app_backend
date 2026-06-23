@@ -4,29 +4,144 @@ const { generateAccessToken, generateRefreshToken } = require('../utils/token');
 // At the top of authRoutes.js
 const protect = require('../middleware/authMiddleware'); // adjust path
 const tpinController = require('../controllers/tpinController'); // adjust path
-
+const { generateMemberId } = require('../utils/idGenerator'); // Add this at top
 
 exports.register = async (req, res) => {
+  console.log('===== REGISTER REQUEST RECEIVED =====');
+  console.log('Request body:', req.body);
+  
+  const {
+    first_name, last_name, email, phone,
+    business_name, business_type, business_address,
+    city, state, pin_code,
+    aadhaar_number, pan_number,
+    referred_by,
+  } = req.body;
+
+  // ========== VALIDATION ==========
+  if (!first_name || !last_name || !email || !phone) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Missing required fields' 
+    });
+  }
+
   const client = await pool.connect();
+  
   try {
-    const { first_name, last_name, email, phone, password, business_name, business_type,
-            business_address, city, state, pin_code, aadhaar_number, pan_number } = req.body;
+    // ========== START TRANSACTION ==========
+    await client.query('BEGIN');
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    // ========== CHECK FOR DUPLICATES ==========
+    const exists = await client.query(
+      'SELECT id FROM users WHERE email = $1 OR phone = $2',
+      [email, phone]
+    );
+    
+    if (exists.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ 
+        success: false, 
+        error: 'Email or phone already registered' 
+      });
+    }
 
+    // ========== GENERATE MEMBER ID ==========
+    const memberId = await generateMemberId(client);
+    console.log('📛 Generated Member ID:', memberId);
+
+    // ========== INSERT USER (NO PASSWORD) ==========
     const result = await client.query(
-      `INSERT INTO users (first_name, last_name, email, phone, password, business_name,
-       business_type, business_address, city, state, pin_code, aadhaar_number, pan_number, role)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending') RETURNING *`,
-      [first_name, last_name, email, phone, hashedPassword, business_name,
-       business_type, business_address, city, state, pin_code, aadhaar_number, pan_number]
+      `INSERT INTO users (
+        first_name, last_name, email, phone, role, member_id,
+        business_name, business_type, business_address,
+        city, state, pin_code, aadhaar_number, pan_number, referred_by
+      ) VALUES ($1, $2, $3, $4, 'pending', $5,
+                $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      RETURNING id, member_id, first_name, last_name, email, phone, role`,
+      [
+        first_name, last_name, email, phone, memberId,
+        business_name || null, business_type || null, business_address || null,
+        city || null, state || null, pin_code || null, 
+        aadhaar_number || null, pan_number || null,
+        referred_by || null
+      ]
     );
 
-    res.status(201).json({ success: true, message: "Verification pending", user: result.rows[0] });
+    // ========== COMMIT TRANSACTION ==========
+    await client.query('COMMIT');
+
+    console.log('✅ User registered successfully:', result.rows[0].member_id);
+
+    res.status(201).json({
+      success: true,
+      memberId: result.rows[0].member_id,
+      user: result.rows[0],
+      message: 'Registration submitted. Awaiting admin approval.'
+    });
+
   } catch (err) {
-    res.status(400).json({ success: false, message: err.message });
-  } finally { client.release(); }
+    // ========== ROLLBACK ON ERROR ==========
+    await client.query('ROLLBACK');
+    
+    console.error('❌ Registration error:', err);
+    console.error('Error code:', err.code);
+    console.error('Error detail:', err.detail);
+    console.error('Error column:', err.column);
+    
+    // ========== FRIENDLY ERROR MESSAGES ==========
+    let message = 'Registration failed';
+    let statusCode = 500;
+    
+    if (err.code === '23505') {
+      message = 'Email or phone already registered';
+      statusCode = 409;
+    } else if (err.code === '23502') {
+      message = `Missing required field: ${err.column}`;
+      statusCode = 400;
+    } else if (err.code === '22001') {
+      message = `Value too long for field: ${err.column || 'unknown'}`;
+      statusCode = 400;
+    }
+    
+    res.status(statusCode).json({ 
+      success: false, 
+      error: message,
+      details: err.detail || null
+    });
+    
+  } finally {
+    // ========== RELEASE CONNECTION ==========
+    client.release();
+    console.log('🔒 Database connection released');
+  }
 };
+// exports.register = async (req, res) => {
+//   // Add debug logging
+//   console.log('===== REGISTER REQUEST RECEIVED =====');
+//   console.log('Request headers:', req.headers);
+//   console.log('Request body:', req.body);
+//   console.log('Request body type:', typeof req.body);
+//   const client = await pool.connect();
+//   try {
+//     const { first_name, last_name, email, phone, business_name, business_type,
+//             business_address, city, state, pin_code, aadhaar_number, pan_number, referred_by, } = req.body;
+
+//     const hashedPassword = await bcrypt.hash(password, 10);
+
+//     const result = await client.query(
+//       `INSERT INTO users (first_name, last_name, email, phone, business_name,
+//        business_type, business_address, city, state, pin_code, aadhaar_number, pan_number, role)
+//        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending') RETURNING *`,
+//       [first_name, last_name, email, phone, business_name,
+//        business_type, business_address, city, state, pin_code, aadhaar_number, pan_number]
+//     );
+
+//     res.status(201).json({ success: true, message: "Verification pending", user: result.rows[0] });
+//   } catch (err) {
+//     res.status(400).json({ success: false, message: err.message });
+//   } finally { client.release(); }
+// };
 
 
 exports.login = async (req, res) => {
@@ -93,10 +208,12 @@ exports.login = async (req, res) => {
       message: 'Login successful',
       user: {
         id: user.id,
+        member_id: user.member_id,
         name: `${user.first_name} ${user.last_name}`,
         email: user.email,
         phone: user.phone,
-        role: user.role
+        role: user.role,
+        tpin: !!user.tpin,
       },
       accessToken,
       refreshToken

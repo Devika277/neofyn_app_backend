@@ -26,9 +26,10 @@ module.exports = {
   sendOTP: (params) => provider.sendOTP(params),
   resendOTP: (params) => provider.resendOTP(params),
   verifyOTP: (params) => provider.verifyOTP(params),
-  merchantEkyc: (params) => provider.merchantEkyc(params),   // Task 3: E-KYC
-  perform2FA: (params) => provider.perform2FA(params),       // 🆕 Task 4: Daily 2FA
+  merchantEkyc: (params) => provider.merchantEkyc(params),
+  perform2FA: (params) => provider.perform2FA(params),
   cashWithdrawal: (params) => provider.cashWithdrawal(params),
+  cashDeposit: (params) => provider.cashDeposit(params),  // ✅ ADD THIS
   balanceEnquiry: (params) => provider.balanceEnquiry(params),
   miniStatement: (params) => provider.miniStatement(params),
 };

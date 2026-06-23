@@ -1,260 +1,412 @@
-// backend/routes/payoutRoutes.js
 const express = require('express');
 const router = express.Router();
-const payoutService = require('../services/payout/payoutService');
-const PayoutTransaction = require('../models/PayoutTransaction'); // <-- add this
-const pool = require('../config/db');
+const payoutController = require('../controllers/payoutController');
+const { protect } = require('../middleware/authMiddleware');
+const { isAdmin } = require('../middleware/adminMiddleware');
+const { requirePermission } = require('../middleware/permissionMiddleware');
+const axios = require('axios');
+const { decrypt } = require('../utils/vimopayEncrypt');
+const db = require('../config/db')
 
+// ============================================================
+// PUBLIC ROUTES (No authentication required)
+// ============================================================
 
-// ✅ Debug middleware
-router.use((req, res, next) => {
-    console.log('=== PAYOUT ROUTE DEBUG ===');
-    console.log('Time:', new Date().toISOString());
-    console.log('Method:', req.method);
-    console.log('Path:', req.path);
-    console.log('Full URL:', req.originalUrl);
-    console.log('Auth Header:', req.headers.authorization ? 'PRESENT' : 'MISSING');
-    if (req.headers.authorization) {
-        console.log('Auth Header Value:', req.headers.authorization.substring(0, 50) + '...');
-    }
-    console.log('=========================');
-    next();
-});
+// Webhook (public – Vimopay posts directly)
+router.post('/callback', payoutController.payoutWebhook);
 
-// Auth middleware
-const verifyAuth = (req, res, next) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ success: false, message: 'No token provided' });
-    }
-    const token = authHeader.split(' ')[1];
-    try {
-        const jwt = require('jsonwebtoken');
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        req.user = decoded;
-        next();
-    } catch (error) {
-        return res.status(401).json({ success: false, message: 'Invalid token' });
-    }
-};
+// ============================================================
+// PROTECTED ROUTES (Authentication required)
+// ============================================================
 
-// ✅ Master Data Endpoints
-router.get('/banks', verifyAuth, async (req, res) => {
-    try {
-        const result = await payoutService.getBankList();
-        res.json({
-            success: result.successStatus || false,
-            message: result.message || 'Success',
-            data: result.data || []
-        });
-    } catch (error) {
-        console.error('Error fetching banks:', error);
-        res.status(500).json({ success: false, message: error.message });
-    }
-});
+// All routes below require authentication
+router.use(protect);
 
-router.get('/purposes', verifyAuth, async (req, res) => {
-    try {
-        const result = await payoutService.getPurposeList();
-        res.json({
-            success: result.successStatus || false,
-            message: result.message || 'Success',
-            data: result.data || []
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-});
+// ============================================================
+// MASTER DATA ROUTES (Dynamic lists from Vidual API)
+// ============================================================
 
-router.get('/states', verifyAuth, async (req, res) => {
-    try {
-        const result = await payoutService.getStateList();
-        res.json({
-            success: result.successStatus || false,
-            message: result.message || 'Success',
-            data: result.data || []
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-});
-
-// ✅ Payout Initiation (with validation, DB storage, queued response)
-router.post('/initiate', verifyAuth, async (req, res) => {
-    try {
-        const { body } = req;
-        
-        // 1. Required fields validation
-        const required = ['amount', 'beneficiaryBank', 'paymentPurpose', 'beneficiaryAccountNumber', 
-                          'beneficiaryIFSC', 'beneficiaryMobileNumber', 'beneficiaryName', 'beneficiaryLocation'];
-        const missing = required.filter(f => !body[f]);
-        if (missing.length) {
-            return res.status(400).json({ success: false, message: `Missing: ${missing.join(', ')}` });
+/**
+ * GET /api/payout/banks
+ * Get list of all banks from Vidual API (Production)
+ */
+router.get('/banks', async (req, res) => {
+  try {
+    console.log('[Banks API] Fetching bank list...');
+    
+    const authResponse = await axios.post(
+      `${process.env.PAYOUT_BASE_URL}/payoutapi/api/Signature/Authorize`,
+      {},
+      {
+        headers: {
+          secretKey: process.env.PAYOUT_SECRET_KEY,
+          saltKey: process.env.PAYOUT_SALT_KEY,
+          encryptdecryptKey: process.env.PAYOUT_ENCRYPT_DECRYPT_KEY,
+          userId: process.env.PAYOUT_USER_ID
         }
-        
-        // 2. Minimum amount validation (₹100)
-        const amount = parseFloat(body.amount);
-        if (isNaN(amount) || amount < 100) {
-            return res.status(400).json({ success: false, message: 'Amount must be at least ₹100' });
+      }
+    );
+    
+    const rawToken = authResponse.data.data;
+    console.log('[Banks API] Got auth token');
+    
+    const bankResponse = await axios.get(
+      `${process.env.PAYOUT_BASE_URL}/masterapi/api/master/banklist`,
+      {
+        headers: {
+          Authorization: `Bearer ${rawToken}`,
+          userId: process.env.PAYOUT_USER_ID
         }
-        
-        // 3. Payment mode validation: only IMPS/NEFT, uppercase
-        let paymentMode = (body.paymentMode || 'imps').toUpperCase();
-        if (!['IMPS', 'NEFT'].includes(paymentMode)) {
-            return res.status(400).json({ success: false, message: 'Payment mode must be IMPS or NEFT' });
+      }
+    );
+    
+    console.log('[Banks API] Bank API Response Code:', bankResponse.data.responseCode);
+    
+    const encryptedData = bankResponse.data.data;
+    const decrypted = decrypt(encryptedData);
+    const banks = JSON.parse(decrypted);
+    
+    console.log(`[Banks API] Successfully loaded ${banks.length} banks`);
+    
+    res.json({ success: true, banks });
+    
+  } catch (error) {
+    console.error('[Banks API] Error:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Failed to fetch bank list' 
+    });
+  }
+});
+
+/**
+ * GET /api/payout/states
+ * Get list of all states from Vidual API (Production)
+ */
+router.get('/states', async (req, res) => {
+  try {
+    console.log('[States API] Fetching state list...');
+    
+    const authResponse = await axios.post(
+      `${process.env.PAYOUT_BASE_URL}/payoutapi/api/Signature/Authorize`,
+      {},
+      {
+        headers: {
+          secretKey: process.env.PAYOUT_SECRET_KEY,
+          saltKey: process.env.PAYOUT_SALT_KEY,
+          encryptdecryptKey: process.env.PAYOUT_ENCRYPT_DECRYPT_KEY,
+          userId: process.env.PAYOUT_USER_ID
         }
-        body.paymentMode = paymentMode;
-        
-        // 4. Call payout service (it generates merchantRefId if missing)
-        const payoutResp = await payoutService.initiatePayout(body);
-        
-        // 5. Store transaction in database
-        const merchantRefId = payoutResp.merchantRefId;
-        await PayoutTransaction.create({
-            user_id: req.user.id, // assuming JWT contains user id
-            merchant_ref_id: merchantRefId,
-            amount: amount,
-            beneficiary_bank: body.beneficiaryBank,
-            payment_purpose: body.paymentPurpose,
-            payment_mode: paymentMode,
-            beneficiary_account_number: body.beneficiaryAccountNumber,
-            beneficiary_ifsc: body.beneficiaryIFSC,
-            beneficiary_mobile: body.beneficiaryMobileNumber,
-            beneficiary_name: body.beneficiaryName,
-            beneficiary_location: body.beneficiaryLocation,
-            // txn_id: initialTxnId,   // store if available
-            // vimopay_response: payoutResp.rawData || null ,
-            lat: body.lat || '28.7041',
-            long: body.long || '77.1025',
-            udf1: body.udf1,
-            udf2: body.udf2,
-            udf3: body.udf3
-        });
-        
-        // 6. Return queued status to Flutter (not final success)
-        res.json({
-            success: true,
-            message: 'Payout queued for processing',
-            data: {
-                merchantRefId: merchantRefId,
-                status: 'QUEUED'
-            }
-        });
-    } catch (error) {
-        console.error('Payout initiation error:', error);
-        res.status(500).json({ success: false, message: error.message });
-    }
-});
-
-// ✅ Transaction status endpoint
-router.get('/status/:merchantRefId', verifyAuth, async (req, res) => {
-    try {
-        const tx = await PayoutTransaction.findByMerchantRef(req.params.merchantRefId);
-        if (!tx) {
-            return res.status(404).json({ success: false, message: 'Transaction not found' });
+      }
+    );
+    
+    const rawToken = authResponse.data.data;
+    console.log('[States API] Got auth token');
+    
+    const stateResponse = await axios.get(
+      `${process.env.PAYOUT_BASE_URL}/masterapi/api/master/statelist`,
+      {
+        headers: {
+          Authorization: `Bearer ${rawToken}`,
+          userId: process.env.PAYOUT_USER_ID
         }
-        
-        // Fetch user details (remitter) from your users table
-        const userId = req.user.id; // assuming JWT contains user id
-        const userQuery = await pool.query(
-            `SELECT first_name, phone FROM users WHERE id = $1`,
-            [userId]
-        );
-        const user = userQuery.rows[0];
-        
-        // Return combined data
-        res.json({
-            success: true,
-            data: {
-                // Transaction details
-                merchantRefId: tx.merchant_ref_id,
-                status: tx.status,
-                txnId: tx.txn_id,
-                amount: parseFloat(tx.amount),
-                createdAt: tx.created_at,
-                updatedAt: tx.updated_at,
-                // Beneficiary details
-                beneficiaryName: tx.beneficiary_name,
-                beneficiaryAccountNumber: tx.beneficiary_account_number,
-                beneficiaryIFSC: tx.beneficiary_ifsc,
-                beneficiaryMobile: tx.beneficiary_mobile,
-                beneficiaryBank: tx.beneficiary_bank,
-                beneficiaryLocation: tx.beneficiary_location,
-                paymentPurpose: tx.payment_purpose,
-                paymentMode: tx.payment_mode,
-                // Remitter details (current user)
-                remitterName: user?.first_name || 'N/A',
-                remitterPhone: user?.phone || 'N/A'
-            }
-        });
-    } catch (error) {
-        console.error('Status fetch error:', error);
-        res.status(500).json({ success: false, message: error.message });
+      }
+    );
+    
+    console.log('[States API] State API Response Code:', stateResponse.data.responseCode);
+    
+    const encryptedData = stateResponse.data.data;
+    const decrypted = decrypt(encryptedData);
+    const states = JSON.parse(decrypted);
+    
+    console.log(`[States API] Successfully loaded ${states.length} states`);
+    
+    res.json({ success: true, states });
+    
+  } catch (error) {
+    console.error('[States API] Error:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Failed to fetch state list' 
+    });
+  }
+});
+
+// ============================================================
+// AGENT BANK ACCOUNT ROUTES
+// ============================================================
+
+/**
+ * GET /api/payout/my-bank-account
+ * Get agent's primary bank account details
+ */
+router.get('/my-bank-account', payoutController.getMyBankAccount);
+
+/**
+ * GET /api/payout/my-bank-accounts
+ * Get all active bank accounts for the agent
+ */
+router.get('/my-bank-accounts', payoutController.getMyBankAccounts);
+
+/**
+ * POST /api/payout/bank-account
+ * Add a new bank account (does not delete existing)
+ * Body: { account_name, account_number, ifsc_code, bank_name, mobile_number?, state_code?, vimopay_bank_code? }
+ */
+router.post('/bank-account', payoutController.upsertBankAccount);
+
+/**
+ * PUT /api/payout/bank-account/:id
+ * Update an existing bank account by ID
+ * Body: { account_name, account_number, ifsc_code, bank_name, mobile_number?, state_code?, vimopay_bank_code? }
+ */
+router.put('/bank-account/:id', payoutController.updateBankAccount);
+
+/**
+ * DELETE /api/payout/bank-account/:id
+ * Soft-delete a bank account (set is_active = false)
+ */
+router.delete('/bank-account/:id', payoutController.deleteBankAccount);
+
+/**
+ * PATCH /api/payout/bank-account/:id/default
+ * Set a specific account as the primary (default) account
+ */
+router.patch('/bank-account/:id/default', payoutController.setDefaultBankAccount);
+
+// ============================================================
+// WALLET & LIMITS ROUTES
+// ============================================================
+
+/**
+ * GET /api/payout/balance
+ * Get AEPS wallet balance
+ */
+router.get('/balance', payoutController.getPayoutBalance);
+
+/**
+ * GET /api/payout/limits
+ * Get daily and monthly payout limits
+ */
+router.get('/limits', payoutController.getPayoutLimits);
+
+// ============================================================
+// TRANSACTION ROUTES
+// ============================================================
+
+/**
+ * POST /api/payout/transfer
+ * Create a new payout transfer
+ * Requires 'payout.transfer' permission
+ * Body: { amount, mode, tpin, remarks?, lat?, long?, bankAccountId? }
+ */
+router.post('/transfer', requirePermission('payout.transfer'), payoutController.createPayout);
+
+
+/**
+ * GET /api/payout/transactions
+ * Get logged-in user's payout transactions
+ */
+router.get('/transactions', payoutController.getMyPayoutTransactions);
+
+// ✅ ADD THIS ROUTE - Get transaction status by merchant reference ID
+/**
+ * GET /api/payout/status/:merchantRefId
+ * Get transaction status by merchant reference ID
+ */
+router.get('/status/:merchantRefId', async (req, res) => {
+  try {
+    const { merchantRefId } = req.params;
+    const userId = req.user.id;
+    
+    console.log(`[Status API] Fetching status for merchantRefId: ${merchantRefId}`);
+    
+    const result = await db.query(
+      `SELECT 
+        id,
+        user_id,
+        amount,
+        transfer_mode as paymentMode,
+        status,
+        merchant_ref_id as merchantRefId,
+        provider_ref_id as providerRefId,
+        bank_ref_no as bankRefNo,
+        failure_reason,
+        created_at,
+        updated_at,
+        bene_account_name as beneficiaryName,
+        bene_account_number as beneficiaryAccountNumber,
+        bene_ifsc as beneficiaryIFSC
+      FROM payout_transactions 
+      WHERE merchant_ref_id = $1 AND user_id = $2`,
+      [merchantRefId, userId]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found'
+      });
     }
+    
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+    
+  } catch (error) {
+    console.error('[Status API] Error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to fetch transaction status'
+    });
+  }
 });
 
-// ✅ VimoPay Callback endpoint (no auth – public)
-router.post('/callback', async (req, res) => {
-    try {
-        const callbackData = req.body;
-        console.log('📞 VimoPay Callback received:', JSON.stringify(callbackData));
-        
-        // Expected fields from VimoPay (adjust keys as per actual callback)
-        const { merchantRefId, txnStatus, txnId, status, referenceId } = callbackData;
-        const refId = merchantRefId || callbackData.merchant_ref_id;
-        
-        if (!refId) {
-            console.error('Callback missing merchantRefId');
-            return res.status(400).json({ successStatus: false, message: 'Missing merchantRefId' });
-        }
-        
-        // Map VimoPay status to internal status
-        let internalStatus = 'QUEUED';
-        const statusText = (txnStatus || status || '').toUpperCase();
-        if (statusText === 'SUCCESS' || statusText === 'COMPLETED') internalStatus = 'SUCCESS';
-        else if (statusText === 'FAILED' || statusText === 'REJECTED') internalStatus = 'FAILED';
-        
-        const finalTxnId = txnId || referenceId;
-        
-        await PayoutTransaction.updateStatus(refId, internalStatus, finalTxnId, callbackData);
-        
-        // Acknowledge receipt as per VimoPay PDF
-        res.json({ successStatus: true, message: 'Success', responseCode: '000' });
-    } catch (error) {
-        console.error('Callback processing error:', error);
-        res.status(500).json({ successStatus: false, message: 'Internal error' });
+
+
+// routes/payoutRoutes.js
+
+// ============================================================
+// BENEFICIARY ROUTES (Using agent_bank_accounts table)
+// ============================================================
+
+const payoutBeneficiaryService = require('../services/payout/payoutBeneficiaryService');
+
+/**
+ * POST /api/payout/beneficiary/add
+ * Add a new beneficiary (stored in agent_bank_accounts with is_primary = false)
+ * Body: { userId, phone, beneData: { account_name, account_number, ifsc_code, bank_code, state_code, payment_mode, mobile } }
+ */
+router.post('/beneficiary/add', async (req, res) => {
+  try {
+    const { userId, phone, beneData } = req.body;
+    
+    console.log('📥 Received beneficiary data:', { userId, phone, beneData });
+    
+    if (!userId || !phone || !beneData) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'userId, phone, and beneData are required'
+      });
     }
-});
 
-
-// GET /api/payout/history – list all payouts for the authenticated user
-router.get('/history', verifyAuth, async (req, res) => {
-    try {
-        const userId = req.user.id; // assuming JWT contains user.id
-        const transactions = await PayoutTransaction.getUserTransactions(userId);
-        res.json({
-            success: true,
-            data: transactions.map(tx => ({
-                merchantRefId: tx.merchant_ref_id,
-                amount: parseFloat(tx.amount),
-                status: tx.status,
-                txnId: tx.txn_id,
-                beneficiaryName: tx.beneficiary_name,
-                beneficiaryBank: tx.beneficiary_bank,
-                createdAt: tx.created_at,
-                paymentMode: tx.payment_mode
-            }))
-        });
-    } catch (error) {
-        console.error('History fetch error:', error);
-        res.status(500).json({ success: false, message: error.message });
+    // ✅ Validate required fields
+    if (!beneData.account_name) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'account_name is required'
+      });
     }
+    if (!beneData.account_number) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'account_number is required'
+      });
+    }
+    if (!beneData.ifsc_code) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'ifsc_code is required'
+      });
+    }
+
+    const result = await payoutBeneficiaryService.addBeneficiary(userId, phone, beneData);
+    
+    res.json({
+      status: 'success',
+      data: result.beneficiary,
+      message: result.message
+    });
+    
+  } catch (error) {
+    console.error('[Add Beneficiary API] Error:', error.message);
+    res.status(400).json({
+      status: 'error',
+      message: error.message || 'Failed to add beneficiary'
+    });
+  }
+});
+
+/**
+ * GET /api/payout/beneficiaries
+ * Get all beneficiaries for a user (from agent_bank_accounts where is_primary = false)
+ */
+router.get('/beneficiaries', async (req, res) => {
+  try {
+    const userId = req.query.userId || req.user?.id;
+    
+    if (!userId) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'User ID is required'
+      });
+    }
+
+    const beneficiaries = await payoutBeneficiaryService.listBeneficiaries(userId);
+    
+    res.json({
+      status: 'success',
+      data: beneficiaries,
+      message: 'Beneficiaries fetched successfully'
+    });
+    
+  } catch (error) {
+    console.error('[Beneficiaries API] Error:', error.message);
+    res.status(500).json({
+      status: 'error',
+      message: error.message || 'Failed to fetch beneficiaries'
+    });
+  }
+});
+
+/**
+ * DELETE /api/payout/beneficiary/:id
+ * Soft delete a beneficiary
+ */
+router.delete('/beneficiary/:id', async (req, res) => {
+  try {
+    const beneficiaryId = req.params.id;
+    const userId = req.query.userId || req.user?.id;
+    
+    if (!userId) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'User ID is required'
+      });
+    }
+
+    const result = await payoutBeneficiaryService.deleteBeneficiary(beneficiaryId, userId);
+    
+    res.json({
+      status: 'success',
+      ...result
+    });
+    
+  } catch (error) {
+    console.error('[Delete Beneficiary API] Error:', error.message);
+    res.status(400).json({
+      status: 'error',
+      message: error.message || 'Failed to delete beneficiary'
+    });
+  }
 });
 
 
-console.log('✅ Payout routes registered:');
-router.stack.forEach((r) => {
-    if (r.route && r.route.path) console.log(`   ${Object.keys(r.route.methods)} /api/payout${r.route.path}`);
-});
+/**
+ * GET /api/payout/transactions
+ * Get logged-in user's payout transactions
+ */
+router.get('/transactions', payoutController.getMyPayoutTransactions);
+
+// ============================================================
+// ADMIN ROUTES
+// ============================================================
+
+/**
+ * GET /api/payout/admin/transactions
+ * Get all payout transactions (admin only)
+ */
+router.get('/admin/transactions', isAdmin, payoutController.adminGetPayoutTransactions);
 
 module.exports = router;

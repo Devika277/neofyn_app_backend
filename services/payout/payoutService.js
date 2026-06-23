@@ -1,189 +1,463 @@
-// backend/services/payoutService.js
-const crypto = require('crypto');
+/**
+ * Payout Service (AEPS wallet → own bank account)
+ * 
+ * Handles:
+ * - Getting agent's own bank account (from agent_bank_accounts table)
+ * - Checking AEPS balance (from aeps_wallets)
+ * - Daily/monthly limit checks
+ * - TPIN validation
+ * - Deducting AEPS wallet, logging ledger
+ * - Creating payout_transaction
+ * - Calling provider
+ * - Handling success/failure/queued (refund on failure)
+ * - Upserting the agent's bank account (create/update)
+ */
 
-class PayoutService {
-    constructor() {
-        this.baseUrl = process.env.PAYOUT_BASE_URL;
-        this.userId = process.env.PAYOUT_USER_ID;
-        this.secretKey = process.env.PAYOUT_SECRET_KEY;
-        this.saltKey = process.env.PAYOUT_SALT_KEY;
-        this.encryptDecryptKey = process.env.PAYOUT_ENCRYPT_DECRYPT_KEY;
-        this.edKey = process.env.PAYOUT_ED_KEY;     // = secretKey for AES‑256
-        this.ivKey = process.env.PAYOUT_IV_KEY;     // = saltKey for AES‑256
+const { v4: uuidv4 } = require('uuid');
+const db = require('../../config/db');
+const { getPayoutProvider } = require('../../providers/payoutProviderRouter');
+// const { validateTpin } = require('../../utils/mpinHelper');
+const commissionEngine = require('../Commission/commissionEngine');
+const { validateTpin } = require('../../utils/tpinHelper');
 
-        this.bearerToken = null;
-        this.tokenExpiry = null;
-        this.authorizing = false;
-        this.authorizePromise = null;
+
+/**
+ * Get agent's own bank account details (read-only for Payout)
+ * @param {number} userId 
+ * @returns {Promise<Object|null>} { account_name, account_number, ifsc_code, bank_name, mobile_number, state_code, vimopay_bank_code }
+ */
+// async function getMyBankAccount(userId) {
+//   try {
+//     const query = `
+//       SELECT 
+//         account_name,
+//         account_number,
+//         ifsc_code,
+//         bank_name,
+//         mobile_number,
+//         state_code,
+//         vimopay_bank_code
+//       FROM agent_bank_accounts
+//       WHERE user_id = $1 AND is_primary = true AND is_active = true
+//     `;
+//     const result = await db.query(query, [userId]);
+//     if (result.rows.length === 0) return null;
+//     return result.rows[0];
+//   } catch (error) {
+//     console.error('getMyBankAccount error:', error.message);
+//     return null;
+//   }
+// }
+
+
+
+
+/**
+ * Get payout charge based on amount slab and user role
+ * @param {number} amount - transaction amount
+ * @param {string} role - user role (retailer, distributor, master_distributor)
+ * @returns {Promise<number>} - charge amount to deduct
+ */
+async function getPayoutCharge(amount, role) {
+  try {
+    const normalizedRole = (role || 'retailer').toLowerCase();
+    
+    // Query the commission_rates table for payout charges
+    const query = `
+      SELECT rate_value, rate_type
+      FROM commission_rates
+      WHERE service_type = 'payout'
+        AND role = $1
+        AND is_active = TRUE
+        AND $2::numeric >= min_amount
+        AND ($3::numeric IS NULL OR $2::numeric <= max_amount)
+      ORDER BY min_amount ASC
+      LIMIT 1
+    `;
+    
+    const result = await db.query(query, [normalizedRole, amount, amount]);
+    
+    if (result.rows.length === 0) {
+      console.log(`[Payout Charge] No charge found for role: ${normalizedRole}, amount: ${amount}`);
+      return 0;
     }
-
-    encryptPayload(plainText) {
-        const key = Buffer.from(this.edKey, 'utf8');
-        const iv = Buffer.from(this.ivKey, 'utf8');
-        const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-        const encrypted = Buffer.concat([
-            cipher.update(plainText, 'utf8'),
-            cipher.final()
-        ]);
-        const tag = cipher.getAuthTag();
-        return Buffer.concat([encrypted, tag]).toString('base64');
-    }
-
-    decryptPayload(encryptedBase64) {
-        try {
-            const key = Buffer.from(this.edKey, 'utf8');
-            const iv = Buffer.from(this.ivKey, 'utf8');
-            const data = Buffer.from(encryptedBase64, 'base64');
-            const tag = data.slice(-16);
-            const ct = data.slice(0, -16);
-            const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-            decipher.setAuthTag(tag);
-            return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8').trim();
-        } catch (e) {
-            return null;
-        }
-    }
-
-    async _makeRequest(endpoint, method = 'GET', body = null, isAuthRequest = false, retries = 2) {
-        const url = `${this.baseUrl}${endpoint}`;
-        const headers = { 'Content-Type': 'application/json' };
-
-        if (isAuthRequest) {
-            headers.secretKey = this.secretKey;
-            headers.saltKey = this.saltKey;
-            headers.encryptdecryptKey = this.encryptDecryptKey;
-            headers.userId = this.userId;
-        } else {
-            if (!this.bearerToken) await this.ensureValidToken();
-            headers.Authorization = `Bearer ${this.bearerToken}`;
-            headers.userId = this.userId;
-        }
-
-        const options = { method, headers };
-        if (body && method === 'POST') options.body = JSON.stringify(body);
-
-        for (let attempt = 0; attempt <= retries; attempt++) {
-            try {
-                const response = await fetch(url, options);
-                const rawText = await response.text();
-                let data;
-                try {
-                    data = JSON.parse(rawText);
-                } catch {
-                    data = { successStatus: false, message: 'Invalid JSON response' };
-                }
-
-                if (!isAuthRequest && data.successStatus === true && data.data && typeof data.data === 'string' && data.data.length > 100) {
-                    const decrypted = this.decryptPayload(data.data);
-                    if (decrypted) {
-                        try {
-                            data.data = JSON.parse(decrypted);
-                        } catch {
-                            // keep as string
-                        }
-                    }
-                }
-                return data;
-            } catch (error) {
-                if (attempt === retries || (error.code !== 'ECONNRESET' && error.code !== 'ETIMEDOUT')) {
-                    throw error;
-                }
-                await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
-            }
-        }
-    }
-
-    async authorize() {
-        const endpoint = '/rechargeapi/api/signature/authorizeuat';
-        const response = await this._makeRequest(endpoint, 'POST', null, true);
-
-        if (response && response.successStatus === true && response.data) {
-            const rawToken = response.data.replace(/[\r\n]/g, '');
-            this.bearerToken = rawToken;
-            this.tokenExpiry = Date.now() + 55 * 60 * 1000;
-            return this.bearerToken;
-        }
-        throw new Error(response?.message || 'Authorization failed');
-    }
-
-    async ensureValidToken() {
-        if (this.bearerToken && this.tokenExpiry && Date.now() < this.tokenExpiry) {
-            return this.bearerToken;
-        }
-        if (this.authorizing) {
-            return this.authorizePromise;
-        }
-        this.authorizing = true;
-        this.authorizePromise = this.authorize().finally(() => {
-            this.authorizing = false;
-            this.authorizePromise = null;
-        });
-        return this.authorizePromise;
-    }
-
-    async getBankList() {
-        await this.ensureValidToken();
-        return this._makeRequest('/masterapi/api/master/banklistuat', 'GET');
-    }
-
-    async getPurposeList() {
-        await this.ensureValidToken();
-        return this._makeRequest('/masterapi/api/master/purposelistuat', 'GET');
-    }
-
-    async getStateList() {
-        await this.ensureValidToken();
-        return this._makeRequest('/masterapi/api/master/statelistuat', 'GET');
-    }
-
-    async initiatePayout(payoutData) {
-        await this.ensureValidToken();
-
-        // Add defaults if missing
-        if (!payoutData.lat) payoutData.lat = '28.7041';
-        if (!payoutData.long) payoutData.long = '77.1025';
-        
-        // Generate unique merchantRefId if not provided
-        if (!payoutData.merchantRefId) {
-            payoutData.merchantRefId = `MER${Date.now()}${Math.random().toString(36).substring(2, 10)}`;
-        }
-        
-        // Store the generated merchantRefId for later use
-        const merchantRefId = payoutData.merchantRefId;
-
-        const plainText = JSON.stringify(payoutData);
-        const encryptedData = this.encryptPayload(plainText);
-        const requestBody = { requestBody: encryptedData };
-
-        const response = await this._makeRequest('/payoutapi/api/payment/payoutsuat', 'POST', requestBody);
-
-        // Decrypt response if needed
-        if (response.successStatus && response.data && typeof response.data === 'string') {
-            const decrypted = this.decryptPayload(response.data);
-            if (decrypted) {
-                try {
-                    response.data = JSON.parse(decrypted);
-                    console.log('✅ Decrypted payout response:', JSON.stringify(response.data, null, 2));
-
-                } catch {
-                    // keep as string
-                }
-            }
-        }
-        
-        // ✅ Attach the merchantRefId to the response object so the route can use it
-        response.merchantRefId = merchantRefId;
-        
-        return response;
-    }
-
-    validateIFSC(ifsc) {
-        return /^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc.toUpperCase());
-    }
-
-    validateMobileNumber(mobile) {
-        return /^[6-9]\d{9}$/.test(mobile);
-    }
+    
+    const charge = parseFloat(result.rows[0].rate_value);
+    console.log(`[Payout Charge] Charge for ${normalizedRole} on ₹${amount}: ₹${charge}`);
+    return charge;
+    
+  } catch (error) {
+    console.error('[Payout Charge] Error:', error.message);
+    return 0;
+  }
 }
 
-module.exports = new PayoutService();
+
+// services/payout/payoutService.js
+
+async function getMyBankAccount(userId) {
+  try {
+    const query = `
+      SELECT 
+        account_name,
+        account_number,
+        ifsc_code,
+        bank_name,
+        mobile_number,
+        state_code,
+        vimopay_bank_code
+      FROM agent_bank_accounts
+      WHERE user_id = $1 AND is_primary = true AND is_active = true
+    `;
+    const result = await db.query(query, [userId]);
+    if (result.rows.length === 0) return null;
+    return result.rows[0];
+  } catch (error) {
+    console.error('getMyBankAccount error:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Save or update the agent's bank account details.
+ * This will replace any existing primary account for the user.
+ * @param {number} userId 
+ * @param {object} data - { account_name, account_number, ifsc_code, bank_name, mobile_number, state_code, vimopay_bank_code }
+ * @returns {Promise<object>} the saved bank account record
+ */
+async function upsertBankAccount(userId, data) {
+  const { account_name, account_number, ifsc_code, bank_name, mobile_number, state_code, vimopay_bank_code } = data;
+
+  if (!account_number || !ifsc_code) {
+    throw new Error('Account number and IFSC are required');
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Remove any existing primary bank account for this user
+    await client.query(
+      `DELETE FROM agent_bank_accounts
+       WHERE user_id = $1 AND is_primary = true`,
+      [userId]
+    );
+
+    const insertQuery = `
+      INSERT INTO agent_bank_accounts
+        (user_id, account_name, account_number, ifsc_code, bank_name, mobile_number, state_code, vimopay_bank_code, is_primary, is_active, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, true, NOW(), NOW())
+      RETURNING id, user_id, account_name, account_number, ifsc_code, bank_name, mobile_number, state_code, vimopay_bank_code, is_primary, is_active, created_at, updated_at
+    `;
+    const values = [
+      userId,
+      account_name || null,
+      account_number,
+      ifsc_code,
+      bank_name || null,
+      mobile_number || null,
+      state_code || null,
+      vimopay_bank_code || null
+    ];
+    const result = await client.query(insertQuery, values);
+    const newAccount = result.rows[0];
+
+    await client.query('COMMIT');
+    return newAccount;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('upsertBankAccount error:', error);
+    throw new Error('Failed to save bank account');
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Get AEPS wallet balance from aeps_wallets table
+ * @param {number} userId 
+ * @returns {Promise<number>}
+ */
+async function getAepsBalance(userId) {
+  const query = `SELECT balance FROM aeps_wallets WHERE user_id = $1`;
+  const result = await db.query(query, [userId]);
+  if (result.rows.length === 0) return 0;
+  return parseFloat(result.rows[0].balance);
+}
+
+/**
+ * Get daily and monthly usage for Payout
+ * @param {number} userId 
+ * @returns {Promise<{ dailyUsed: number, dailyLimit: number, monthlyUsed: number, monthlyLimit: number }>}
+ */
+async function getPayoutLimits(userId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+
+  const dailyQuery = `
+    SELECT payout_daily_used FROM payout_daily_limits 
+    WHERE user_id = $1 AND date = $2
+  `;
+  let dailyResult = await db.query(dailyQuery, [userId, today]);
+  const dailyUsed = dailyResult.rows.length > 0 ? parseFloat(dailyResult.rows[0].payout_daily_used) : 0;
+
+  const monthlyQuery = `
+    SELECT COALESCE(SUM(amount), 0) as total 
+    FROM payout_transactions 
+    WHERE user_id = $1 AND wallet_source = 'aeps' 
+      AND status = 'success' 
+      AND created_at >= $2
+  `;
+  const monthlyResult = await db.query(monthlyQuery, [userId, startOfMonth]);
+  const monthlyUsed = parseFloat(monthlyResult.rows[0].total);
+
+  const dailyLimit = 100000;   // ₹1,00,000
+  const monthlyLimit = 1000000; // ₹10,00,000
+
+  return { dailyUsed, dailyLimit, monthlyUsed, monthlyLimit };
+}
+
+/**
+ * Process a Payout transfer (AEPS wallet → own bank)
+ * @param {number} userId 
+ * @param {Object} data - { amount, mode, tpin, ip_address, fee?, remarks? }
+ * @returns {Promise<Object>} { success, transactionId, amount, providerRefId?, bankRefNo?, message? }
+ */
+async function processPayout(userId, data) {
+  const { amount, mode, tpin, ip_address, remarks, fee = 0 } = data;
+
+  if (!amount || amount <= 0) throw new Error('Invalid amount');
+  if (amount < 100) throw new Error('Minimum payout amount is ₹100');
+  if (amount > 50000) throw new Error('Maximum per transaction is ₹50,000');
+  if (!['IMPS', 'NEFT'].includes(mode)) throw new Error('Invalid transfer mode');
+
+  const isTpinValid = await validateTpin(userId, tpin);
+  if (!isTpinValid) throw new Error('Invalid TPIN');
+
+  const myBank = await getMyBankAccount(userId);
+  if (!myBank) throw new Error('No bank account found. Please add a bank account in profile.');
+
+  const aepsBalance = await getAepsBalance(userId);
+  if (aepsBalance < amount) throw new Error(`Insufficient AEPS balance. Available: ₹${aepsBalance}`);
+
+  // ✅ Get user role for charge calculation
+  const userResult = await db.query('SELECT role FROM users WHERE id = $1', [userId]);
+  const userRole = userResult.rows[0]?.role || 'retailer';
+
+  // ✅ Calculate payout charge based on amount slab and role
+  const payoutCharge = await getPayoutCharge(amount, userRole);
+  const totalDeduction = amount + payoutCharge;
+
+  // ✅ Check if user has enough balance including charge
+  if (aepsBalance < totalDeduction) {
+    throw new Error(`Insufficient AEPS balance. Required: ₹${totalDeduction} (₹${amount} + ₹${payoutCharge} charge)`);
+  }
+
+  console.log(`[Payout] Amount: ₹${amount}, Charge: ₹${payoutCharge}, Total Deduction: ₹${totalDeduction}`);
+
+  const { dailyUsed, dailyLimit, monthlyUsed, monthlyLimit } = await getPayoutLimits(userId);
+  if (dailyUsed + totalDeduction > dailyLimit) {
+    throw new Error(`Daily limit exceeded. Used: ₹${dailyUsed}, Limit: ₹${dailyLimit}`);
+  }
+  if (monthlyUsed + totalDeduction > monthlyLimit) {
+    throw new Error(`Monthly limit exceeded. Used: ₹${monthlyUsed}, Limit: ₹${monthlyLimit}`);
+  }
+
+  const merchantRefId = Date.now().toString() + Math.floor(Math.random() * 10000);
+  const transactionRef = `PAY_${uuidv4().replace(/-/g, '').slice(0, 24)}`;
+
+  const client = await db.connect();
+  const startTime = Date.now();
+
+  try {
+    await client.query('BEGIN');
+
+    // ✅ Deduct amount + charge from aeps_wallets
+    const updateWalletQuery = `
+      UPDATE aeps_wallets 
+      SET balance = balance - $1, updated_at = NOW() 
+      WHERE user_id = $2 AND balance >= $1
+      RETURNING balance
+    `;
+    const walletUpdate = await client.query(updateWalletQuery, [totalDeduction, userId]);
+    
+    if (walletUpdate.rows.length === 0) {
+      throw new Error('Failed to deduct wallet (insufficient balance or concurrent update)');
+    }
+    const newBalance = parseFloat(walletUpdate.rows[0].balance);
+
+    // ✅ Insert ledger entry for payout withdrawal
+    const ledgerQuery = `
+      INSERT INTO aeps_wallet_ledger (aeps_wallet_id, transaction_type, amount, balance_after, description, created_at)
+      SELECT id, 'payout_withdrawal', $1, $2, $3, NOW()
+      FROM aeps_wallets WHERE user_id = $4
+    `;
+    await client.query(ledgerQuery, [amount, newBalance, `Payout to own bank via ${mode}`, userId]);
+
+    // ✅ Insert ledger entry for payout charge
+    if (payoutCharge > 0) {
+      await client.query(ledgerQuery, [
+        payoutCharge, 
+        newBalance, 
+        `Payout charge (${userRole}) for ₹${amount} transaction`, 
+        userId
+      ]);
+    }
+
+    // Insert transaction record
+    const txnQuery = `
+      INSERT INTO payout_transactions (
+        user_id, wallet_source, transfer_mode, amount, merchant_ref_id,
+        bene_account_name, bene_account_number, bene_ifsc, status, ip_address, provider, 
+        payout_charge, total_deduction, created_at, updated_at
+      ) VALUES ($1, 'aeps', $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11, NOW(), NOW())
+      RETURNING id
+    `;
+    const txnValues = [
+      userId, mode, amount, merchantRefId,
+      myBank.account_name, myBank.account_number, myBank.ifsc_code,
+      ip_address,
+      process.env.PAYOUT_PROVIDER || 'mock',
+      payoutCharge,
+      totalDeduction
+    ];
+    const txnResult = await client.query(txnQuery, txnValues);
+    const transactionId = txnResult.rows[0].id;
+
+    // Update daily limit usage
+    const today = new Date().toISOString().slice(0, 10);
+    const upsertLimitQuery = `
+      INSERT INTO payout_daily_limits (user_id, date, payout_daily_used, created_at)
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (user_id, date) DO UPDATE
+      SET payout_daily_used = payout_daily_limits.payout_daily_used + EXCLUDED.payout_daily_used
+    `;
+    await client.query(upsertLimitQuery, [userId, today, totalDeduction]);
+
+    // Call provider
+    const provider = getPayoutProvider();
+    let providerResponse;
+    try {
+      providerResponse = await provider.transfer({
+        merchantRefId,
+        amount,
+        mode,
+        accountDetails: {
+          accountName: myBank.account_name,
+          accountNumber: myBank.account_number,
+          ifsc: myBank.ifsc_code,
+          mobileNumber: myBank.mobile_number || '9999999999',
+          stateCode: myBank.state_code || 'MH',
+          bankCode: myBank.vimopay_bank_code || '001',
+          lat: data.lat || '0.0',
+          long: data.long || '0.0'
+        }
+      });
+    } catch (err) {
+      throw new Error(`Provider error: ${err.message}`);
+    }
+
+    const responseTimeMs = Date.now() - startTime;
+    const isSuccess = providerResponse.status === '000';
+    const isQueued = providerResponse.status === '004';
+    const finalStatus = isSuccess ? 'success' : (isQueued ? 'pending' : 'failed');
+
+    if (isSuccess) {
+      await client.query(`
+        UPDATE payout_transactions 
+        SET status = 'success', provider_ref_id = $1, bank_ref_no = $2, raw_response = $3, updated_at = NOW()
+        WHERE id = $4
+      `, [providerResponse.providerRefId, providerResponse.bankRefNo, JSON.stringify(providerResponse), transactionId]);
+
+      await client.query('COMMIT');
+
+      // ✅ Update final balance after all deductions
+      const finalBalance = await getAepsBalance(userId);
+      console.log(`💰 Final AEPS balance after payout: ${finalBalance}`);
+
+      return {
+        success: true,
+        transactionId,
+        merchantRefId: merchantRefId,
+        amount: parseFloat(amount),
+        payoutCharge: payoutCharge,
+        totalDeduction: totalDeduction,
+        newBalance: finalBalance,
+        providerRefId: providerResponse.providerRefId,
+        bankRefNo: providerResponse.bankRefNo,
+        message: 'Payout successful'
+      };
+
+    } else if (isQueued) {
+      await client.query(`
+        UPDATE payout_transactions
+        SET status = 'pending', provider_ref_id = $1, raw_response = $2, updated_at = NOW()
+        WHERE id = $3
+      `, [providerResponse.providerRefId, JSON.stringify(providerResponse), transactionId]);
+
+      await client.query('COMMIT');
+
+      return {
+        success: true,
+        transactionId,
+        amount: parseFloat(amount),
+        payoutCharge: payoutCharge,
+        totalDeduction: totalDeduction,
+        providerRefId: providerResponse.providerRefId,
+        message: 'Transfer submitted. Final status will be updated shortly.'
+      };
+
+    } else {
+      // Provider failure: refund amount + charge
+      await client.query(`
+        UPDATE aeps_wallets 
+        SET balance = balance + $1, updated_at = NOW()
+        WHERE user_id = $2
+      `, [totalDeduction, userId]);
+
+      await client.query(`
+        INSERT INTO aeps_wallet_ledger (aeps_wallet_id, transaction_type, amount, balance_after, description, created_at)
+        SELECT id, 'payout_refund', $1, (balance + $1), $2, NOW()
+        FROM aeps_wallets WHERE user_id = $3
+      `, [totalDeduction, `Refund for failed payout (₹${amount} + ₹${payoutCharge} charge)`, userId]);
+
+      await client.query(`
+        UPDATE payout_transactions 
+        SET status = 'failed', failure_reason = $1, raw_response = $2, updated_at = NOW()
+        WHERE id = $3
+      `, [providerResponse.message, JSON.stringify(providerResponse), transactionId]);
+
+      await client.query(`
+        UPDATE payout_daily_limits 
+        SET payout_daily_used = payout_daily_used - $1
+        WHERE user_id = $2 AND date = $3
+      `, [totalDeduction, userId, today]);
+
+      await client.query('COMMIT');
+
+      return {
+        success: false,
+        transactionId,
+        amount: parseFloat(amount),
+        payoutCharge: payoutCharge,
+        totalDeduction: totalDeduction,
+        message: `Payout failed: ${providerResponse.message}`
+      };
+    }
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('processPayout error:', err.message);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = {
+  getMyBankAccount,
+  getAepsBalance,
+  getPayoutLimits,
+  processPayout,
+  upsertBankAccount,
+  getPayoutCharge
+};

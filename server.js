@@ -67,6 +67,8 @@ app.use('/api/bbps', require('./routes/bbpsRoutes'));
 // NEW: AEPS Routes
 app.use('/api/aeps', aepsRoutes);
 
+// app.use('/api/aepsapi', aepsRoutes); // This makes the endpoint: /api/aepsapi/2fa
+
 app.use('/api/payout', payoutRoutes); // ADD THIS LINE
 
 // ========== 404 HANDLER ==========

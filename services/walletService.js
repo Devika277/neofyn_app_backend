@@ -1,10 +1,4 @@
 // backend/services/walletService.js
-//
-// FIX APPLIED:
-//   [FIX] addMoney() now accepts an optional `client` parameter — matching
-//         deductMoney() — so callers inside an existing DB transaction can
-//         pass their client and avoid opening a nested transaction that would
-//         deadlock on the wallet row lock.
 
 const pool = require('../config/db');
 
@@ -36,8 +30,6 @@ const getBalance = async (userId) => {
 };
 
 // ─── Add money to main wallet (Credit) ──────────────────────────
-// [FIX] Added optional `client` parameter so this can be called
-//       inside an existing transaction without opening a nested one.
 const addMoney = async (userId, amount, description, adminId, client = null) => {
   let ownClient = false;
   let dbClient  = client;
@@ -89,7 +81,6 @@ const addMoney = async (userId, amount, description, adminId, client = null) => 
 };
 
 // ─── Deduct money from main wallet (Debit) ──────────────────────
-// Accepts optional `client` for use inside an existing transaction.
 const deductMoney = async (userId, amount, description, referenceId = null, client = null) => {
   let ownClient = false;
   let dbClient  = client;
@@ -148,6 +139,23 @@ const deductMoney = async (userId, amount, description, referenceId = null, clie
 const deductBalance = async (userId, amount, description, client = null) => {
   const referenceId = `AEP-${Date.now()}`;
   return deductMoney(userId, amount, description, referenceId, client);
+};
+
+// ─── ✅ NEW: Deduct fee for beneficiary registration ─────────────
+const deductBeneficiaryFee = async (userId, amount, beneficiaryName, client = null) => {
+  const description = `Beneficiary registration fee for ${beneficiaryName}`;
+  const referenceId = `BENEFEE-${Date.now()}`;
+  return deductMoney(userId, amount, description, referenceId, client);
+};
+
+// ─── ✅ NEW: Check if user has sufficient balance ────────────────
+const hasSufficientBalance = async (userId, amount) => {
+  try {
+    const balance = await getBalance(userId);
+    return balance >= amount;
+  } catch (error) {
+    throw error;
+  }
 };
 
 // ─── Get transaction history (main wallet) ───────────────────────
@@ -222,6 +230,8 @@ module.exports = {
   addMoney,
   deductMoney,
   deductBalance,
+  deductBeneficiaryFee,      // ✅ NEW
+  hasSufficientBalance,      // ✅ NEW
   getTransactionHistory,
   getAllWallets,
   getWalletStats,

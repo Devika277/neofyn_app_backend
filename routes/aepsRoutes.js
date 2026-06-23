@@ -31,6 +31,8 @@
 
 const express = require('express');
 const router = express.Router();
+const db = require('../config/db');
+const vimopayAepsProvider = require('../providers/vimopayAepsProvider');
 
 const aepsService = require('../services/AEPS/aepsService');
 const aepsWalletService = require('../services/AEPS/aepsWalletService');
@@ -56,41 +58,132 @@ function getIp(req) {
 // User Endpoints (Authenticated)
 // ==============================
 
-router.get('/merchant/status', authenticate, async (req, res) => {
+// router.get('/merchant/status', authenticate, async (req, res) => {
+//   try {
+//     const pipe = req.query.pipe || '2';
+//     if (!['1', '2', '3'].includes(pipe)) {
+//       return res.status(400).json({ success: false, message: 'Invalid pipe. Must be "1", "2", or "3".' });
+//     }
+//     const status = await aepsService.getMerchantStatus(req.user.id, pipe);
+//     res.json(status);
+//   } catch (error) {
+//     console.error('Error checking merchant status:', error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
+
+
+router.get('/merchant-status', async (req, res) => {
+  const { userId } = req.query;
   try {
-    const pipe = req.query.pipe || '2';
-    if (!['1', '2', '3'].includes(pipe)) {
-      return res.status(400).json({ success: false, message: 'Invalid pipe. Must be "1", "2", or "3".' });
-    }
-    const status = await aepsService.getMerchantStatus(req.user.id, pipe);
-    res.json(status);
-  } catch (error) {
-    console.error('Error checking merchant status:', error);
-    res.status(500).json({ success: false, message: error.message });
+    const result = await aepsService.getAllMerchantStatuses(userId);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
+// backend/routes/aepsRoutes.js
+
 router.post('/merchant/register', authenticate, async (req, res) => {
+  console.log('[AEPS Route] ════════════════════════════════════════════');
+  console.log('[AEPS Route] 🔵 POST /merchant/register');
+  console.log('[AEPS Route] 🔵 User ID:', req.user?.id);
+  console.log('[AEPS Route] 🔵 Request body:', JSON.stringify(req.body, null, 2));
+
   try {
-    const { aadhaarNo, pipe } = req.body;
+    const { 
+      aadhaarNo, 
+      pipe,
+      firstName,
+      lastName,
+      stateCode,
+      districtCode,
+      // ... other fields
+    } = req.body;
+
+    // Validate Aadhaar
     if (!aadhaarNo || aadhaarNo.length !== 12 || !/^\d{12}$/.test(aadhaarNo)) {
       return res.status(400).json({
         success: false,
         message: 'Agent Aadhaar number is required and must be a valid 12-digit number'
       });
     }
+
+    // Validate Pipe
     if (!pipe || !['1', '2', '3'].includes(pipe)) {
-      return res.status(400).json({ success: false, message: 'Valid pipe (1, 2, or 3) is required' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Valid pipe (1, 2, or 3) is required' 
+      });
     }
+
+    console.log(`[AEPS Route] ✅ Registering merchant for pipe ${pipe}`);
+
+    // ✅ Check if merchant exists for this specific pipe
+    const existingMerchant = await db.query(
+      `SELECT * FROM aeps_merchants WHERE user_id = $1 AND pipe = $2`,
+      [req.user.id, pipe]
+    );
+
+    if (existingMerchant.rows.length > 0) {
+      console.log(`[AEPS Route] ❌ Merchant already exists for pipe ${pipe}`);
+      return res.status(409).json({
+        success: false,
+        message: `Merchant already registered for pipe ${pipe}`,
+        merchantId: existingMerchant.rows[0].merchant_id,
+        pipe: pipe,
+        registrationStatus: existingMerchant.rows[0].registration_status
+      });
+    }
+
+    // ✅ Check if merchant exists for other pipes (optional info)
+    const otherPipes = await db.query(
+      `SELECT pipe FROM aeps_merchants WHERE user_id = $1 AND pipe != $2`,
+      [req.user.id, pipe]
+    );
+    
+    if (otherPipes.rows.length > 0) {
+      console.log(`[AEPS Route] ℹ️ User has merchants on other pipes:`, 
+        otherPipes.rows.map(r => r.pipe).join(', ')
+      );
+    }
+
+    // ✅ Register merchant
     const result = await aepsService.registerMerchant(req.user.id, {
       ...req.body,
       ipAddress: getIp(req),
-      pipe,
+      pipe: pipe,
     });
-    res.json(result);
+
+    console.log('[AEPS Route] ✅ Registration successful:', {
+      merchantId: result.merchantId,
+      pipe: result.pipe,
+      status: result.registrationStatus
+    });
+
+    res.json({
+      success: true,
+      message: `Merchant registered successfully for pipe ${pipe}`,
+      data: result
+    });
+
   } catch (error) {
-    console.error('Error registering merchant:', error);
-    res.status(500).json({ success: false, message: error.message });
+    console.error('[AEPS Route] ❌ Registration error:', error.message);
+    console.error('[AEPS Route] Stack:', error.stack);
+    
+    // Handle specific errors
+    if (error.message.includes('already registered')) {
+      return res.status(409).json({
+        success: false,
+        message: error.message
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Failed to register merchant' 
+    });
   }
 });
 
@@ -217,7 +310,137 @@ router.post('/merchant/ekyc', authenticate, async (req, res) => {
   }
 });
 
-// Daily 2FA
+// ============================================================
+// Daily 2FA Route
+// ============================================================
+// backend/routes/aepsRoutes.js
+
+// ============================================================
+// ✅ ADD THIS ROUTE - For 2FA (matches Flutter app's expected endpoint)
+// ============================================================
+// router.post('/aepsapi/api/payment/merchant2FAPipe', authenticate, async (req, res) => {
+//   console.log('[AEPS Route] ════════════════════════════════════════════');
+//   console.log('[AEPS Route] 🔵 POST /aepsapi/api/payment/merchant2FAPipe');
+//   console.log('[AEPS Route] 🔵 User ID:', req.user?.id);
+//   console.log('[AEPS Route] 🔵 Request body:', JSON.stringify(req.body, null, 2));
+
+//   try {
+//     let { 
+//       merchantId, 
+//       merchantRefId, 
+//       aadhaarNumber, 
+//       pipe, 
+//       deviceType, 
+//       pidData, 
+//       lat, 
+//       long 
+//     } = req.body;
+
+//     // Validate required fields
+//     if (!merchantId || !merchantRefId || !aadhaarNumber || !pidData) {
+//       console.log('[AEPS Route] ❌ Missing required fields');
+//       return res.status(400).json({ 
+//         successStatus: false, 
+//         message: 'merchantId, merchantRefId, aadhaarNumber, and pidData are required',
+//         responseCode: '001'
+//       });
+//     }
+
+//     // Validate Aadhaar
+//     if (!/^\d{12}$/.test(aadhaarNumber)) {
+//       console.log('[AEPS Route] ❌ Invalid Aadhaar format');
+//       return res.status(400).json({ 
+//         successStatus: false, 
+//         message: 'Aadhaar number must be 12 digits',
+//         responseCode: '001'
+//       });
+//     }
+
+//     // Set default pipe if not provided
+//     pipe = pipe || '1';
+//     if (!['1', '2', '3'].includes(pipe)) {
+//       console.log('[AEPS Route] ❌ Invalid pipe:', pipe);
+//       return res.status(400).json({ 
+//         successStatus: false, 
+//         message: 'Invalid pipe value. Must be 1, 2, or 3',
+//         responseCode: '001'
+//       });
+//     }
+
+//     console.log('[AEPS Route] ✅ Validation passed');
+//     console.log('[AEPS Route] 📦 Calling provider with:', {
+//       merchantId,
+//       merchantRefId,
+//       aadhaarNumber: '****' + aadhaarNumber.slice(-4),
+//       pipe,
+//       deviceType: deviceType || 'mantra',
+//       pidDataLength: pidData ? pidData.length : 0,
+//       lat: lat || '0.0',
+//       long: long || '0.0'
+//     });
+
+//     // ✅ Call the provider directly
+//     const result = await vimopayAepsProvider.perform2FA({
+//       merchantId,
+//       merchantRefId,
+//       aadhaarNumber,
+//       pipe,
+//       deviceType: deviceType || 'mantra',
+//       pidData,
+//       lat: lat || '0.0',
+//       long: long || '0.0',
+//     });
+
+//     console.log('[AEPS Route] 📥 Provider result:', JSON.stringify(result, null, 2));
+
+//     // Check if the 2FA was successful
+//     if (result.status === '000') {
+//       console.log('[AEPS Route] ✅ 2FA Successful!');
+//       return res.json({
+//         successStatus: true,
+//         message: result.statusDescription || '2FA verification successful',
+//         responseCode: '000',
+//         data: {
+//           status: result.status,
+//           merchantStatus: result.merchantStatus,
+//           statusDescription: result.statusDescription || '2FA verification successful',
+//           merchantId: result.merchantId,
+//           txnRefId: result.txnRefId,
+//         }
+//       });
+//     } else {
+//       console.log('[AEPS Route] ❌ 2FA Failed with status:', result.status);
+//       return res.status(400).json({
+//         successStatus: false,
+//         message: result.statusDescription || '2FA verification failed',
+//         responseCode: result.status || '001',
+//         data: {
+//           status: result.status,
+//           merchantStatus: result.merchantStatus,
+//           statusDescription: result.statusDescription || '2FA verification failed',
+//           merchantId: result.merchantId,
+//           txnRefId: result.txnRefId,
+//         }
+//       });
+//     }
+
+//   } catch (error) {
+//     console.error('[AEPS Route] ❌ Error performing 2FA:', error.message);
+//     console.error('[AEPS Route] Stack:', error.stack);
+    
+//     return res.status(500).json({ 
+//       successStatus: false, 
+//       message: error.message || 'Internal server error',
+//       responseCode: '500',
+//       data: {
+//         status: '500',
+//         merchantStatus: 'Failed',
+//         statusDescription: error.message || 'Internal server error',
+//       }
+//     });
+//   }
+// });
+// In aepsRoutes.js, replace the /2fa route:
 router.post('/2fa', authenticate, async (req, res) => {
   try {
     let { merchantId, merchantRefId, aadhaarNumber, pipe, deviceType, pidData, lat, long } = req.body;
@@ -244,7 +467,32 @@ router.post('/2fa', authenticate, async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
-
+// router.post('/2fa', authenticate, async (req, res) => {
+//   try {
+//     let { merchantId, merchantRefId, aadhaarNumber, pipe, deviceType, pidData, lat, long } = req.body;
+//     if (!merchantId || !merchantRefId || !aadhaarNumber || !pidData) {
+//       return res.status(400).json({ success: false, message: 'merchantId, merchantRefId, aadhaarNumber, and pidData required' });
+//     }
+//     pipe = pipe || '2';
+//     if (!['1', '2', '3'].includes(pipe)) {
+//       return res.status(400).json({ success: false, message: 'Invalid pipe value' });
+//     }
+//     const result = await aepsService.perform2FA(req.user.id, pipe, {
+//       merchantId,
+//       merchantRefId,
+//       aadhaarNumber,
+//       deviceType: deviceType || 'mantra',
+//       pidData,
+//       lat,
+//       long,
+//       ipAddress: getIp(req),
+//     });
+//     res.json(result);
+//   } catch (error) {
+//     console.error('Error performing 2FA:', error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// });
 // ==============================
 // Transactions
 // ==============================
