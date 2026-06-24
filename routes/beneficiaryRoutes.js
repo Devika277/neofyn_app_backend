@@ -58,7 +58,6 @@ router.post('/', async (req, res) => {
         account_number,
         ifsc_code,
         bank_name,
-        bank_code,
         purpose_code,
         purpose_desc,
         mobile,

@@ -6,25 +6,10 @@ const db = require('../config/db');
 const walletService = require('../services/walletService');
 
 class RechargeController {
-    /**
-     * POST /api/recharge/process
-     * Handles recharge request with idempotency, test mode, and location data.
-     */
     async processRecharge(req, res) {
         try {
             const userId = req.user.id;
-            const {
-                mobile,
-                operator,
-                serviceType = 'MBL',
-                amount,
-                idempotencyKey,
-                testMode,
-                lat,
-                long
-            } = req.body;
-
-            // Validation
+            const { mobile, operator, serviceType = 'MBL', amount, idempotencyKey, testMode, lat, long } = req.body;
             if (!mobile || !operator || !amount) {
                 return res.status(400).json({
                     success: false,
@@ -51,15 +36,7 @@ class RechargeController {
 
             const result = await rechargeService.processRecharge(
                 userId,
-                {
-                    mobile,
-                    operator,
-                    serviceType,
-                    amount: parseFloat(amount),
-                    testMode,
-                    lat,
-                    long
-                },
+                { mobile, operator, serviceType, amount: parseFloat(amount), testMode, lat, long },
                 idempotencyKey
             );
 
@@ -86,9 +63,46 @@ class RechargeController {
     }
 
     /**
-     * GET /api/recharge/history
-     * Returns user's recharge history with pagination.
+     * GET /api/recharge/plans
+     * Fetch recharge plans filtered by operator and circle (state).
+     * Query params: operator (required), circle (optional, defaults to 'ALL')
      */
+    async getPlans(req, res) {
+        try {
+            const { operator, circle } = req.query;
+
+            if (!operator) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Operator is required'
+                });
+            }
+
+            const circleFilter = circle || 'ALL';
+
+            const plans = await rechargeService.getPlansByOperatorAndCircle(operator, circleFilter);
+
+            // Group plans by category for frontend consumption
+            const groupedPlans = plans.reduce((acc, plan) => {
+                const category = plan.category || 'others';
+                if (!acc[category]) acc[category] = [];
+                acc[category].push(plan);
+                return acc;
+            }, {});
+
+            return res.status(200).json({
+                success: true,
+                plans: groupedPlans
+            });
+        } catch (error) {
+            logger.error('RechargeController: Error fetching plans', { error: error.message });
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to fetch recharge plans'
+            });
+        }
+    }
+
     async getUserHistory(req, res) {
         try {
             const userId = req.user.id;
@@ -106,10 +120,6 @@ class RechargeController {
         }
     }
 
-    /**
-     * GET /api/recharge/all (admin)
-     * Returns all recharges with filtering and pagination.
-     */
     async getAllRecharges(req, res) {
         try {
             const limit = parseInt(req.query.limit) || 50;
@@ -138,22 +148,21 @@ class RechargeController {
 
     /**
      * POST /api/recharge/callback
-     * Vimopay (or other provider) posts final transaction status here.
-     *
+     * Vimopay posts final transaction status here.
      * CRITICAL RULES:
-     *   1. ALWAYS return HTTP 200 — otherwise provider retries forever.
-     *   2. Always wrap in try/catch — never crash the response.
-     *   3. Validate merchantRefId exists before using it.
-     *   4. Use lowercase status values only (to match DB CHECK constraint).
+     *   1. ALWAYS return HTTP 200 — if we return anything else, Vimopay retries forever
+     *   2. ALWAYS wrap in try/catch — never let a crash reach the response
+     *   3. Check merchantRefId exists before using it
+     *   4. Use lowercase status values only
      */
     async handleCallback(req, res) {
-        // Default ACK – always sent at the end
+        // ✅ RULE 1: Declare ack first — this is ALWAYS returned at the bottom
         const ack = { successStatus: true, message: 'Success', responseCode: '000' };
 
         try {
             const isMock = process.env.PAYMENT_MODE === 'mock';
 
-            // ---------- Mock callback (for testing) ----------
+            // ── Mock callback (original logic unchanged) ─────────────────────
             if (isMock) {
                 const { txn_id, status, amount, hash } = req.body;
 
@@ -208,7 +217,7 @@ class RechargeController {
                 return res.status(200).json(ack);
             }
 
-            // ---------- Live / Sandbox callback (e.g., Vimopay) ----------
+            // ── Vimopay callback (sandbox / live) ────────────────────────────
             const {
                 txnId,
                 txnStatusCode,
@@ -228,13 +237,11 @@ class RechargeController {
                 txnId
             });
 
-            // Validate required fields
             if (!txnStatusCode || !merchantRefId) {
                 logger.error('[CALLBACK] Missing required fields', req.body);
                 return res.status(200).json(ack);
             }
 
-            // ✅ IMPORTANT: Query by merchant_ref_id (the string we sent, e.g., "158")
             const txnResult = await db.query(
                 `SELECT id, user_id, plan_amount, status
                  FROM transactions
@@ -250,13 +257,11 @@ class RechargeController {
 
             const row = txnResult.rows[0];
 
-            // Idempotency – skip if already in a final state
             if (row.status === 'success' || row.status === 'failed') {
                 logger.info('[CALLBACK] Already processed, skipping:', merchantRefId);
                 return res.status(200).json(ack);
             }
 
-            // Status map (all lowercase to match DB)
             const statusMap = {
                 '000': 'success',
                 '001': 'failed',
@@ -266,12 +271,12 @@ class RechargeController {
             };
             const newStatus = statusMap[txnStatusCode] || 'pending';
 
-            // Update transaction with full callback data
+            // ✅ FIXED: cast api_response to jsonb to avoid type mismatch error
             await db.query(
                 `UPDATE transactions
                  SET status          = $1,
                      provider_txn_id = $2,
-                     api_response    = COALESCE(api_response, '{}'::jsonb) || $3::jsonb,
+                     api_response    = COALESCE(api_response::jsonb, '{}'::jsonb) || $3::jsonb,
                      updated_at      = NOW()
                  WHERE id = $4`,
                 [
@@ -284,35 +289,32 @@ class RechargeController {
                         tds:             tds             || 0,
                         txnStatus:       txnStatus       || null
                     }),
-                    row.id   // use primary key for safe update
+                    row.id
                 ]
             );
 
             logger.info(`[CALLBACK] Status updated to: ${newStatus} for txn id: ${row.id}`);
 
-            // Refund wallet on failure
             if ((txnStatusCode === '001' || txnStatusCode === '003') && row.user_id) {
                 const refundAmount = parseFloat(amount || row.plan_amount || 0);
                 await walletService.addMoney(
                     row.user_id,
                     refundAmount,
-                    `Recharge refund - Provider txn ${txnId || merchantRefId}`,
+                    `Recharge refund - Vimopay txn ${txnId || merchantRefId}`,
                     null
                 );
                 logger.info(`[CALLBACK] Refunded ₹${refundAmount} for txn id: ${row.id}`);
             }
 
-            // (Optional) future commission engine call can be added here
+            // Commission engine can be called here if needed
 
         } catch (error) {
-            // Log everything but NEVER return a non‑200 status
             logger.error('[CALLBACK] Unhandled error:', error.message);
             logger.error('[CALLBACK] Stack:', error.stack);
             logger.error('[CALLBACK] Body was:', JSON.stringify(req.body));
-            // fall through – will return ack below
+            // fall through – return ack
         }
 
-        // ALWAYS return 200 OK with the ack object
         return res.status(200).json(ack);
     }
 }

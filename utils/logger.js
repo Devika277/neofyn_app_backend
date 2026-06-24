@@ -65,7 +65,7 @@ const logger = {
 const logProviderCall = (type, data, txnId = '') => {
   const timestamp = new Date().toISOString();
   const logEntry = `[${timestamp}] [${txnId}] ${type.toUpperCase()}: ${JSON.stringify(data)}\n`;
-
+  
   writeToFile(logEntry);
 
   // Also log to console in development

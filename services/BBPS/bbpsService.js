@@ -1,692 +1,479 @@
-// // services/recharge/bbpsService.js
-// const { v4: uuidv4 } = require('uuid');
-// const db = require('../../config/db');
-// const logger = require('../../utils/logger');
+const { v4: uuidv4 } = require('uuid');
+const db = require('../../config/db');
+const logger = require('../../utils/logger');
+const walletService = require('../walletService');
+const providerRouter = require('../../routes/providerRouter');
+const { processCommission } = require('../Commission/commissionService'); // ✅ only commission service
 
-// // Dummy bill data generator
-// const DUMMY_BILLS = {
-//   ELECTRICITY: {
-//     billerId: "BBPS_ELEC_001",
-//     billerName: "City Power Distribution Ltd",
-//     category: "ELECTRICITY",
-//     billAmount: 1542.50,
-//     lateFee: 50.00,
-//     totalAmount: 1592.50,
-//   },
-//   WATER: {
-//     billerId: "BBPS_WTR_002",
-//     billerName: "Municipal Water Supply Board",
-//     category: "WATER",
-//     billAmount: 850.00,
-//     lateFee: 25.00,
-//     totalAmount: 875.00,
-//   },
-//   GAS: {
-//     billerId: "BBPS_GAS_003",
-//     billerName: "City Gas Network",
-//     category: "GAS",
-//     billAmount: 2340.75,
-//     lateFee: 100.00,
-//     totalAmount: 2440.75,
-//   },
-//   TELECOM: {
-//     billerId: "BBPS_TEL_004",
-//     billerName: "Fast Broadband Services",
-//     category: "TELECOM",
-//     billAmount: 999.00,
-//     lateFee: 0,
-//     totalAmount: 999.00,
-//   }
-// };
+class PaymentService {
+  /**
+   * processPayment – two‑step bill payment:
+   *   - step: 'fetch'  → retrieve bill details, store transaction (amount 0)
+   *   - step: 'pay'    → deduct wallet, call provider, finalise
+   */
+  async processPayment(userId, paymentData, idempotencyKey = null) {
+    const { serviceType, customerId, additionalData = {}, step } = paymentData;
+    const client = await db.connect();
+    const transactionRef = `PAY_${uuidv4().replace(/-/g, '').slice(0, 24)}`;
 
-// function generateBillNumber() {
-//   return `BILL${Date.now()}${Math.floor(Math.random() * 10000)}`;
-// }
-
-// function generateCustomerName(customerId) {
-//   const names = ["Rahul Sharma", "Priya Patel", "Amit Kumar", "Neha Singh", "Test User"];
-//   const index = parseInt(customerId?.slice(-2) || "0") % names.length;
-//   return names[index];
-// }
-
-// // Main fetch bill function
-// async function fetchBBPSBill(userId, billData) {
-//   const { serviceType, customerId, isTestMode = true } = billData;
-  
-//   logger.info(`Fetching ${serviceType} bill for customer ${customerId}, user: ${userId}`);
-  
-//   try {
-//     const dummyConfig = DUMMY_BILLS[serviceType] || DUMMY_BILLS.ELECTRICITY;
-//     const billNumber = generateBillNumber();
-//     const dueDate = new Date();
-//     dueDate.setDate(dueDate.getDate() + 15);
-//     const customerName = generateCustomerName(customerId);
-    
-//     // Randomize amount
-//     let billAmount = dummyConfig.billAmount;
-//     if (serviceType === 'ELECTRICITY') {
-//       billAmount = Math.floor(Math.random() * 3000) + 500;
-//     }
-    
-//     const dummyResponse = {
-//       success: true,
-//       isDummyData: true,
-//       message: "Bill fetched successfully (Test Data)",
-//       data: {
-//         id: Date.now(),
-//         billerId: dummyConfig.billerId,
-//         billerName: dummyConfig.billerName,
-//         serviceType: serviceType,
-//         customerId: customerId,
-//         customerName: customerName,
-//         consumerNumber: customerId,
-//         billNumber: billNumber,
-//         billAmount: billAmount,
-//         lateFee: dummyConfig.lateFee,
-//         totalAmount: billAmount + dummyConfig.lateFee,
-//         dueDate: dueDate.toISOString(),
-//         billDate: new Date().toISOString(),
-//         billPeriod: "Current Month",
-//         status: "PENDING",
-//         isPaid: false
-//       }
-//     };
-    
-//     // Save to database
-//     try {
-//       await saveBillToDatabase({
-//         userId,
-//         serviceType,
-//         ...dummyResponse.data,
-//         isTestData: true
-//       });
-//     } catch (dbError) {
-//       logger.warn('Could not save bill to DB:', dbError.message);
-//     }
-    
-//     return dummyResponse;
-    
-//   } catch (error) {
-//     logger.error('fetchBBPSBill error:', error);
-//     return {
-//       success: true,
-//       isDummyData: true,
-//       isFallback: true,
-//       message: "Bill generated from fallback data",
-//       data: generateFallbackBill(serviceType, customerId)
-//     };
-//   }
-// }
-
-// function generateFallbackBill(serviceType, customerId) {
-//   return {
-//     billerId: `FALLBACK_${serviceType}`,
-//     billerName: `${serviceType} Bill Service`,
-//     serviceType: serviceType,
-//     customerId: customerId,
-//     customerName: "Customer",
-//     billNumber: `FALLBACK_${Date.now()}`,
-//     billAmount: 1000,
-//     totalAmount: 1000,
-//     dueDate: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString(),
-//     status: "PENDING"
-//   };
-// }
-
-// // ✅ ADD THIS FUNCTION - Save bill to database
-// async function saveBillToDatabase(billData) {
-//   const query = `
-//     INSERT INTO bills (
-//       user_id, service_type, biller_id, biller_name, customer_id,
-//       customer_name, bill_number, bill_amount, late_fee, total_amount, 
-//       due_date, bill_date, bill_period, bill_status, additional_info, is_test_data
-//     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-//     RETURNING id
-//   `;
-  
-//   const values = [
-//     billData.userId,
-//     billData.serviceType,
-//     billData.billerId,
-//     billData.billerName,
-//     billData.customerId,
-//     billData.customerName,
-//     billData.billNumber,
-//     billData.billAmount,
-//     billData.lateFee || 0,
-//     billData.totalAmount,
-//     new Date(billData.dueDate),
-//     new Date(billData.billDate || Date.now()),
-//     billData.billPeriod,
-//     billData.status || 'PENDING',
-//     JSON.stringify(billData.additionalInfo || {}),
-//     billData.isTestData || true
-//   ];
-  
-//   const result = await db.query(query, values);
-//   return result.rows[0].id;
-// }
-
-// // ✅ ADD THIS FUNCTION - Update bill status
-// async function updateBillStatus(billId, status, transactionId) {
-//   try {
-//     logger.info(`Updating bill ${billId} status to ${status}, transaction: ${transactionId}`);
-    
-//     const query = `
-//       UPDATE bills 
-//       SET bill_status = $1, 
-//           transaction_id = $2, 
-//           updated_at = NOW()
-//       WHERE id = $3
-//       RETURNING *
-//     `;
-    
-//     const values = [status, transactionId, billId];
-//     const result = await db.query(query, values);
-    
-//     if (result.rows.length === 0) {
-//       logger.warn(`Bill ${billId} not found for status update`);
-//       return null;
-//     }
-    
-//     logger.info(`Bill ${billId} status updated to ${status}`);
-//     return result.rows[0];
-    
-//   } catch (error) {
-//     logger.error('Error updating bill status:', error);
-//     throw error;
-//   }
-// }
-
-// // ✅ ADD THIS FUNCTION - Get customer bills
-// async function getCustomerBills(userId, serviceType = null, limit = 50, offset = 0) {
-//   try {
-//     let query = `
-//       SELECT id, service_type, biller_name, customer_id, bill_number,
-//              bill_amount, total_amount, due_date, bill_date, bill_period,
-//              bill_status, is_test_data, created_at
-//       FROM bills
-//       WHERE user_id = $1
-//     `;
-//     const params = [userId];
-//     let paramIndex = 2;
-    
-//     if (serviceType && serviceType !== 'all' && serviceType !== 'undefined') {
-//       query += ` AND service_type = $${paramIndex}`;
-//       params.push(serviceType.toUpperCase());
-//       paramIndex++;
-//     }
-    
-//     query += ` ORDER BY created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
-//     params.push(limit, offset);
-    
-//     const result = await db.query(query, params);
-    
-//     const countResult = await db.query(
-//       `SELECT COUNT(*) FROM bills WHERE user_id = $1 ${serviceType && serviceType !== 'all' && serviceType !== 'undefined' ? 'AND service_type = $2' : ''}`,
-//       serviceType && serviceType !== 'all' && serviceType !== 'undefined' ? [userId, serviceType.toUpperCase()] : [userId]
-//     );
-    
-//     return {
-//       success: true,
-//       bills: result.rows,
-//       total: parseInt(countResult.rows[0].count),
-//       limit,
-//       offset
-//     };
-    
-//   } catch (error) {
-//     logger.error('Error fetching customer bills:', error);
-//     return {
-//       success: false,
-//       bills: [],
-//       total: 0,
-//       message: error.message
-//     };
-//   }
-// }
-
-// // ✅ ADD THIS FUNCTION - Get available services
-// async function getAvailableServices() {
-//   try {
-//     const result = await db.query(
-//       `SELECT name, display_name, category, icon, is_active 
-//        FROM services 
-//        WHERE is_active = true 
-//        ORDER BY category, display_name`
-//     );
-    
-//     if (result.rows.length > 0) {
-//       return result.rows;
-//     }
-    
-//     return [
-//       { name: 'ELECTRICITY', display_name: 'Electricity Bill', category: 'UTILITY', icon: '⚡', is_active: true },
-//       { name: 'WATER', display_name: 'Water Bill', category: 'UTILITY', icon: '💧', is_active: true },
-//       { name: 'GAS', display_name: 'Gas Bill', category: 'UTILITY', icon: '🔥', is_active: true },
-//       { name: 'TELECOM', display_name: 'Broadband Bill', category: 'UTILITY', icon: '📡', is_active: true }
-//     ];
-//   } catch (error) {
-//     logger.error('Error fetching services:', error);
-//     return [
-//       { name: 'ELECTRICITY', display_name: 'Electricity Bill', category: 'UTILITY' },
-//       { name: 'WATER', display_name: 'Water Bill', category: 'UTILITY' },
-//       { name: 'GAS', display_name: 'Gas Bill', category: 'UTILITY' },
-//       { name: 'TELECOM', display_name: 'Broadband Bill', category: 'UTILITY' }
-//     ];
-//   }
-// }
-
-// // ✅ MAKE SURE ALL FUNCTIONS ARE EXPORTED
-// module.exports = {
-//   fetchBBPSBill,
-//   saveBillToDatabase,
-//   updateBillStatus,      // ← This was missing!
-//   getCustomerBills,      // ← This was missing!
-//   getAvailableServices,  // ← This was missing!
-//   DUMMY_BILLS
-// };
-
-
-// services/bbpsService.js
-const axios = require('axios');
-const encryptionService = require('../encryptionService'); // your existing module
-
-// Environment variables – set these in your .env
-const BASE_URL = process.env.VIMOPAY_BASE_URL;               // e.g. https://<gateway>/bbpsapi
-const SECRET_KEY = process.env.VIMO_SECRET_KEY;
-const SALT_KEY = process.env.VIMO_SALT_KEY;
-const ENCRYPTDECRYPT_KEY = process.env.VIMO_ENCRYPT_DECRYPT_KEY;
-const USER_ID = process.env.VIMO_USER_ID;
-
-// In‑memory token cache (for development; replace with Redis/DB in production)
-let cachedToken = null;
-let tokenExpiry = null;
-
-// Helper: check if token is still valid (TTL = 45 minutes)
-const isTokenValid = () => cachedToken && tokenExpiry && Date.now() < tokenExpiry;
-
-// Helper: sleep for retries
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-/**
- * Step 1 – Partner Authorization
- * Calls /signature/authorizeuat, decrypts the token, and caches it.
- */
-const authorize = async () => {
     try {
-        const url = `${BASE_URL}/api/signature/authorizeuat`;
-        const headers = {
-            'secretKey': SECRET_KEY,
-            'saltKey': SALT_KEY,
-            'encryptdecryptKey': ENCRYPTDECRYPT_KEY,
-            'userId': USER_ID,
-            'Content-Type': 'application/json'
-        };
+      await client.query('BEGIN');
 
-        const response = await axios.post(url, {}, { headers, timeout: 15000 });
+      if (!serviceType || !customerId) {
+        throw new Error('Missing required fields: serviceType, customerId');
+      }
 
-        // Spec says response.data contains the encrypted token
-        const encryptedToken = response.data?.data;
-        if (!encryptedToken) {
-            throw new Error('No token data in authorization response');
+      // Skip service validation for BBPS fetch/pay steps
+      if (step !== 'fetch' && step !== 'pay') {
+        const serviceCheck = await client.query(
+          'SELECT id FROM services WHERE name = $1 AND is_active = true',
+          [serviceType]
+        );
+        if (serviceCheck.rows.length === 0) {
+          throw new Error(`Service ${serviceType} not found or inactive`);
         }
+      }
 
-        // Decrypt the token using your existing decryption method
-        const decryptedToken = encryptionService.decrypt(encryptedToken);
-        if (!decryptedToken) {
-            throw new Error('Failed to decrypt authorization token');
-        }
+      if (step === 'fetch') {
+        return await this._fetchBill(
+          client, userId, serviceType, customerId, additionalData, idempotencyKey, transactionRef
+        );
+      }
 
-        // Cache token and set expiry (45 minutes – spec suggests session token)
-        cachedToken = decryptedToken.trim();
-        tokenExpiry = Date.now() + 45 * 60 * 1000;
+      if (step === 'pay') {
+        return await this._payBill(
+          client, userId, paymentData, idempotencyKey, transactionRef
+        );
+      }
 
-        console.log('✅ BBPS authorization successful, token cached');
-        return cachedToken;
+      throw new Error('Invalid or missing "step". Use "fetch" or "pay".');
     } catch (error) {
-        console.error('❌ Authorization failed:', error.message);
-        throw new Error(`BBPS authorization error: ${error.message}`);
+      await client.query('ROLLBACK');
+      // ❌ No commissionEngine.reverse() – removed as requested
+      logger.error(`PaymentService: Error processing payment`, {
+        error: error.message,
+        stack: error.stack,
+      });
+      throw error;
+    } finally {
+      client.release();
     }
-};
+  }
 
-/**
- * Gets a valid Bearer token – re‑authorizes if expired or missing.
- */
-const getBearerToken = async () => {
-    if (isTokenValid()) return cachedToken;
-    return await authorize();
-};
-
-/**
- * Generic request handler for all BBPS endpoints that need:
- * - Bearer token
- * - Encrypted request body -> { requestBody: "<encrypted>" }
- * - Decryption of the response's data field
- */
-const makeRequest = async (endpoint, payload, retryCount = 0) => {
-    try {
-        const token = await getBearerToken();
-        const url = `${BASE_URL}${endpoint}`;
-
-        // Encrypt the payload using your existing prepareRequest method
-        const encryptedBody = encryptionService.prepareRequest(payload);
-
-        const response = await axios.post(url, encryptedBody, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'userId': USER_ID,
-                'Content-Type': 'application/json'
-            },
-            timeout: 20000
-        });
-
-        // Handle response – decrypt the data field if it exists and is a string
-        let decryptedData = response.data;
-        if (response.data && typeof response.data.data === 'string') {
-            const decryptedString = encryptionService.decrypt(response.data.data);
-            if (decryptedString) {
-                try {
-                    decryptedData = {
-                        ...response.data,
-                        data: JSON.parse(decryptedString)
-                    };
-                } catch (e) {
-                    // If JSON parse fails, keep the decrypted string as is
-                    decryptedData = {
-                        ...response.data,
-                        data: decryptedString
-                    };
-                }
-            }
-        }
-
-        // Check for BBPS error codes (000 = success, others = failure)
-        const responseCode = decryptedData?.responseCode || decryptedData?.statusCode;
-        if (responseCode && responseCode !== '000') {
-            const errorMsg = decryptedData?.message || decryptedData?.statusMessage || 'BBPS request failed';
-            const error = new Error(errorMsg);
-            error.code = responseCode;
-            throw error;
-        }
-
-        return decryptedData;
-    } catch (error) {
-        // If token might be expired (e.g., 401), retry once after re‑authorization
-        if (error.response?.status === 401 && retryCount === 0) {
-            console.warn('Token expired, re‑authorizing and retrying...');
-            cachedToken = null;       // invalidate cache
-            tokenExpiry = null;
-            await sleep(100);
-            return makeRequest(endpoint, payload, retryCount + 1);
-        }
-        throw error;
-    }
-};
-
-// ======================== ADD THESE METHODS ========================
-
-/**
- * Get State List (Master API)
- * Follows exactly the pattern from your working getStateList()
- */
-const getStateList = async () => {
-    try {
-        const token = await getBearerToken();
-        const url = `${BASE_URL}/masterapi/api/master/statelistuat`;
-
-        const response = await axios.get(url, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'userId': USER_ID,
-                'Content-Type': 'application/json'
-            },
-            timeout: 15000
-        });
-
-        // Response structure: { successStatus, message, responseCode, data: "encryptedString" }
-        const encryptedData = response.data?.data;
-        if (!encryptedData) {
-            throw new Error('No data field in state list response');
-        }
-
-        // Decrypt using your existing decryption method
-        const decryptedString = encryptionService.decrypt(encryptedData);
-        if (!decryptedString) {
-            throw new Error('Failed to decrypt state list');
-        }
-
-        const stateList = JSON.parse(decryptedString);  // Array of { code, description }
-        
-        // Optional: map to a clean format
-        const formatted = stateList.map(s => ({
-            code: s.code?.trim(),
-            name: s.description,
-            original: s
-        }));
-
+  // ─── FETCH BILL (no wallet deduction) ────────────────────────────────
+  async _fetchBill(client, userId, serviceType, customerId, additionalData, idempotencyKey, transactionRef) {
+    // Idempotency check
+    if (idempotencyKey) {
+      const existing = await client.query(
+        `SELECT id, api_response FROM transactions 
+         WHERE idempotency_key = $1 AND user_id = $2 AND type = $3`,
+        [idempotencyKey, userId, serviceType]
+      );
+      if (existing.rows.length > 0) {
+        const tx = existing.rows[0];
+        await client.query('ROLLBACK');
+        logger.info(`Duplicate fetch prevented for key ${idempotencyKey}`);
+        const fetchData = tx.api_response?.fetchBillResult || {};
         return {
-            success: true,
-            data: formatted,
-            raw: stateList
+          success: true,
+          message: 'Bill details already fetched',
+          transactionId: tx.id,
+          fetchBillResult: fetchData,
         };
-    } catch (error) {
-        console.error('❌ State list error:', error.message);
-        return { success: false, data: [], error: error.message };
-    }
-};
-
-/**
- * Get City List (District) for a given state
- * POST /bbpsapi/api/BillerCategories/CityUat
- * @param {string} stateCode - The state code (e.g., "AP", "MH")
- */
-const getCityList = async (stateCode) => {
-    try {
-        const token = await getBearerToken();
-        const url = `${BASE_URL}/bbpsapi/api/BillerCategories/CityUat`;
-
-        // According to the PDF, this is a POST with a body (likely { stateCode })
-        // The PDF doesn't show the exact request body, but typical BBPS expects:
-        const requestBody = { stateCode: stateCode };
-
-        // Encrypt the request body (as per your working pattern)
-        const encryptedPayload = encryptionService.prepareRequest(requestBody);
-
-        const response = await axios.post(url, encryptedPayload, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'userId': USER_ID,
-                'Content-Type': 'application/json'
-            },
-            timeout: 15000
-        });
-
-        // Response structure same as state list: { successStatus, data: "encryptedString" }
-        const encryptedData = response.data?.data;
-        if (!encryptedData) {
-            throw new Error('No data field in city list response');
-        }
-
-        const decryptedString = encryptionService.decrypt(encryptedData);
-        if (!decryptedString) {
-            throw new Error('Failed to decrypt city list');
-        }
-
-        const cityList = JSON.parse(decryptedString); // Array of { code, description, ... }
-
-        const formatted = cityList.map(c => ({
-            code: c.code?.trim(),
-            name: c.description,
-            original: c
-        }));
-
-        return {
-            success: true,
-            data: formatted,
-            raw: cityList
-        };
-    } catch (error) {
-        console.error('❌ City list error:', error.message);
-        return { success: false, data: [], error: error.message };
-    }
-};
-
-// ------------------------ EXPORT THESE ------------------------
-
-
-/**
- * Step 3 – Merchant Registration (one‑time per user)
- * @param {string} userId - Your internal user ID (used to store merchantCode)
- * @returns {Promise<{merchantCode: string}>}
- */
-const registerMerchant = async (userId) => {
-    // The spec says the payload for MerchantRegistrationuat is empty or minimal
-    // Some implementations require a dummy object. We'll send {}.
-    const payload = {};
-
-    const response = await makeRequest('/api/Payment/MerchantRegistrationuat', payload);
-
-    // Extract merchantCode from decrypted response
-    const merchantCode = response?.data?.merchantCode || response?.data?.MerchantCode;
-    if (!merchantCode) {
-        throw new Error('Merchant registration did not return a merchantCode');
+      }
     }
 
-    // Store merchantCode in your database (implement this according to your DB)
-    // Example: await db.collection('users').updateOne({ _id: userId }, { $set: { bbpsMerchantCode: merchantCode } });
-    console.log(`✅ Merchant registered for user ${userId}: ${merchantCode}`);
-    return { merchantCode };
-};
-
-/**
- * Step 4a – Fetch Bill
- * @param {string} userId - Internal user ID (to look up merchantCode)
- * @param {object} billFetchParams - { billerId, consumerNumber, ... }
- * @returns {Promise<FetchBillResult>}
- */
-const fetchBill = async (userId, billFetchParams) => {
-    // Retrieve merchantCode from your database (example – replace with your actual DB call)
-    // For demonstration, we assume a function getUserMerchantCode(userId) exists.
-    const merchantCode = await getUserMerchantCode(userId);
-    if (!merchantCode) {
-        throw new Error('User not registered for BBPS. Please call registerMerchant first.');
-    }
-
-    // Build the payload as per spec
-    const payload = {
-        merchantCode: merchantCode,
-        billerId: billFetchParams.billerId,
-        consumerNumber: billFetchParams.consumerNumber,
-        // Optional: additional params like 'mobileNumber', 'email', etc.
-        ...(billFetchParams.additionalParams && { additionalParams: billFetchParams.additionalParams })
-    };
-
-    // Generate a unique merchantRefId for this transaction (UUID)
-    const merchantRefId = generateUUID();
-    payload.merchantRefId = merchantRefId;
-
-    const response = await makeRequest('/api/Payment/FetchBill', payload);
-
-    // The decrypted response.data should contain billerResponse object
-    const billerResponse = response?.data?.billerResponse || response?.data;
-    if (!billerResponse) {
-        throw new Error('FetchBill response missing billerResponse');
-    }
-
-    // Return a structured result that can be used for Pay Now
-    const fetchBillResult = {
-        success: true,
-        merchantRefId: merchantRefId,
-        fetchRefId: billerResponse.fetchRefId,
-        billerId: payload.billerId,
-        merchantCode: merchantCode,
-        customerParams: billerResponse.customerParams || [],
-        amount: billerResponse.amount,
-        dueDate: billerResponse.dueDate,
-        billerName: billerResponse.billerName,
-        // Store the raw billerResponse if needed for further fields
-        rawResponse: billerResponse
-    };
-
-    return fetchBillResult;
-};
-
-/**
- * Step 4b – Pay Bill
- * @param {string} userId - Internal user ID
- * @param {object} transactionRequest - As built from fetchBill result
- * @returns {Promise<BillPaymentResult>}
- */
-const payBill = async (userId, transactionRequest) => {
-    // Ensure merchantCode exists (could also be inside transactionRequest)
-    const merchantCode = await getUserMerchantCode(userId);
-    if (!merchantCode) {
-        throw new Error('User not registered for BBPS.');
-    }
-
-    // The transactionRequest must contain at least:
-    // billerId, merchantRefId (same as fetch), fetchRefId, txnAmount, customerParams
-    const payload = {
-        merchantCode: merchantCode,
-        ...transactionRequest
-    };
-
-    const response = await makeRequest('/api/Payment/PayBill', payload);
-
-    // Extract payment result
-    const paymentData = response?.data || response;
-    return {
-        success: paymentData?.responseCode === '000',
-        transactionId: paymentData?.transactionId,
-        transactionRefId: paymentData?.transactionRefId,
-        paymentStatus: paymentData?.status,
-        message: paymentData?.message,
-        rawResponse: paymentData
-    };
-};
-
-// ------------------------------------------------------------------
-// Helper: generate UUID v4 (replace with a library if preferred)
-const generateUUID = () => {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-        const r = (Math.random() * 16) | 0;
-        const v = c === 'x' ? r : (r & 0x3) | 0x8;
-        return v.toString(16);
+    const fetchResult = await providerRouter.routeBillPayment({
+      step: 'fetch',
+      serviceType,
+      customerId,
+      additionalData,
     });
-};
 
-// ------------------------------------------------------------------
-// STORAGE FOR USER MERCHANT CODES (REPLACE WITH YOUR ACTUAL DB CODE)
-// This is a simple in‑memory map for demonstration.
-// In production, store this in your User collection or a separate table.
-const userMerchantMap = new Map();
+    const insertResult = await client.query(
+      `INSERT INTO transactions 
+       (user_id, type, consumer_number, plan_amount, status, idempotency_key, api_response) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7) 
+       RETURNING id`,
+      [
+        userId,
+        serviceType,
+        customerId,
+        0,
+        'pending',
+        idempotencyKey,
+        JSON.stringify({ step: 'fetch', fetchBillResult: fetchResult }),
+      ]
+    );
+    const transactionId = insertResult.rows[0].id;
 
-async function getUserMerchantCode(userId) {
-    // Example: fetch from database
-    // return await db.collection('users').findOne({ _id: userId }).then(u => u?.bbpsMerchantCode);
-    return userMerchantMap.get(userId) || null;
+    if (fetchResult.fetchRefId) {
+      await client.query(
+        `UPDATE transactions SET provider_txn_id = $1 WHERE id = $2`,
+        [fetchResult.fetchRefId, transactionId]
+      );
+    }
+
+    if (fetchResult.amount && !isNaN(fetchResult.amount)) {
+      await client.query(
+        'UPDATE transactions SET plan_amount = $1 WHERE id = $2',
+        [parseFloat(fetchResult.amount), transactionId]
+      );
+    }
+
+    await client.query('COMMIT');
+    logger.info(`Fetch bill completed, transaction ${transactionId} created`);
+
+    // Log fetch call
+    const startTime = Date.now();
+    try {
+      await providerRouter.logProviderCall({
+        transaction_id: transactionId,
+        provider_id: null,
+        request_payload: JSON.stringify({ step: 'fetch', serviceType, customerId, additionalData }),
+        response_payload: JSON.stringify(fetchResult),
+        status: fetchResult ? 'success' : 'failed',
+        module: 'BBPS',
+        transaction_type: 'fetch',
+        merchant_ref_id: additionalData.merchantRefId || null,
+        http_status: 200,
+        response_time_ms: Date.now() - startTime,
+        final_status: 'pending',
+        error_message: null,
+      });
+    } catch (logError) {
+      logger.error('Failed to log BBPS fetch call', { error: logError.message });
+    }
+
+    return {
+      success: true,
+      message: 'Bill details fetched successfully',
+      transactionId,
+      fetchBillResult: fetchResult,
+    };
+  }
+
+  // ─── Helper: get BBPS merchant code from onboarding table ────────────
+  async _getMerchantCode(client, userId) {
+    const result = await client.query(
+      `SELECT bbps_merchant_code FROM merchant_onboarding WHERE user_id = $1 AND status = 'active'`,
+      [userId]
+    );
+    if (!result.rows[0]?.bbps_merchant_code) {
+      throw new Error('Merchant is not onboarded with BBPS or missing bbps_merchant_code');
+    }
+    return result.rows[0].bbps_merchant_code;
+  }
+
+  // ─── PAY BILL (wallet deduction + provider) ───────────────────────────
+  async _payBill(client, userId, paymentData, idempotencyKey, transactionRef) {
+    const { serviceType, customerId, additionalData = {}, transactionId } = paymentData;
+
+    if (!transactionId) {
+      throw new Error('transactionId is required for the pay step');
+    }
+
+    // Retrieve fetch transaction
+    const fetchTx = await client.query(
+      `SELECT id, plan_amount, provider_txn_id, status 
+       FROM transactions 
+       WHERE id = $1 AND user_id = $2 AND type = $3`,
+      [transactionId, userId, serviceType]
+    );
+    if (fetchTx.rows.length === 0) {
+      throw new Error('No fetch transaction found. Please complete the fetch step first.');
+    }
+    const tx = fetchTx.rows[0];
+    if (tx.status !== 'pending') {
+      throw new Error('This transaction is no longer pending.');
+    }
+
+    const fetchRefId = tx.provider_txn_id;
+    if (!fetchRefId) {
+      throw new Error('Fetch Bill must be completed first. fetchRefId not found.');
+    }
+
+    const apiResult = await client.query(
+      `SELECT api_response FROM transactions WHERE id = $1`,
+      [transactionId]
+    );
+    const fetchBillResult = apiResult.rows[0]?.api_response?.fetchBillResult || {};
+
+    // Validate required fields BEFORE deducting wallet
+    const billerId = fetchBillResult.billerId || fetchBillResult.billerCode;
+    if (!billerId) {
+      throw new Error('Biller ID (or Biller Code) is missing from fetch result');
+    }
+
+    // Use user‑entered amount if provided, otherwise fallback to stored plan_amount
+    let amount = parseFloat(paymentData.amount);
+    if (isNaN(amount) || amount <= 0) {
+      amount = parseFloat(tx.plan_amount);
+    }
+    if (isNaN(amount) || amount <= 0) {
+      throw new Error('Invalid bill amount');
+    }
+
+    // Get merchant code
+    const merchantCode = await this._getMerchantCode(client, userId);
+    logger.info(`Using BBPS merchant code: ${merchantCode} for user ${userId}`);
+
+    const enrichedAdditionalData = {
+      ...additionalData,
+      merchantCode,
+      fetchRefId,
+    };
+
+    // Check wallet balance
+    const balance = await walletService.getBalance(userId);
+    if (balance < amount) {
+      throw new Error(`Insufficient balance. Available: ₹${balance}, Required: ₹${amount}`);
+    }
+
+    // Deduct wallet (all validations passed)
+    const deductResult = await walletService.deductMoney(
+      userId, amount, `${serviceType} payment for ${customerId}`, transactionId
+    );
+    logger.info(`Wallet deducted for pay step. New balance: ${deductResult.newBalance}`);
+
+    if (tx.plan_amount === 0) {
+      await client.query('UPDATE transactions SET plan_amount = $1 WHERE id = $2', [amount, transactionId]);
+    }
+
+    const payStartTime = Date.now();
+
+    // Call provider pay step
+    const providerResponse = await providerRouter.routeBillPayment(
+      {
+        step: 'pay',
+        serviceType,
+        customerId,
+        amount,
+        transaction_id: transactionId,
+        user_id: userId,
+        additionalData: enrichedAdditionalData,
+        testMode: paymentData.testMode,
+      },
+      fetchBillResult
+    );
+
+    const status = providerResponse.status === 'success' ? 'success' :
+                   providerResponse.status === 'pending' ? 'pending' : 'failed';
+
+    // Update transaction with final status
+    await client.query(
+      `UPDATE transactions 
+       SET status = $1, provider_txn_id = $2, api_response = $3, updated_at = NOW() 
+       WHERE id = $4`,
+      [
+        status,
+        providerResponse.provider_txn_id,
+        JSON.stringify({ fetchStep: fetchBillResult, payStep: providerResponse.raw_response }),
+        transactionId,
+      ]
+    );
+
+    // Handle failure – refund (no commission reversal needed)
+    let refundProcessed = false;
+    if (status === 'failed') {
+      const refundResult = await walletService.addMoney(
+        userId, amount, `Refund for failed bill payment ${transactionId}`, null
+      );
+      logger.info(`Refund processed. New balance: ${refundResult.newBalance}`);
+      refundProcessed = true;
+    }
+
+    await client.query('COMMIT');
+
+    // ============================================================
+    // ✅ COMMISSION CREDIT (only on success)
+    // ============================================================
+    if (status === 'success') {
+      await processCommission(
+        'billpay',          // serviceType
+        amount,             // transaction amount
+        userId,             // retailer who paid the bill
+        { serviceType: serviceType }   // original bill type (e.g., 'electricity', 'postpaid')
+      ).catch(err => {
+        // Commission failure never breaks the payment response
+        logger.error(`Commission failed for payment tx ${transactionId}:`, err.message);
+      });
+    }
+
+    // Log BBPS pay call
+    try {
+      await providerRouter.logProviderCall({
+        transaction_id: transactionId,
+        provider_id: null,
+        request_payload: JSON.stringify({ step: 'pay', amount, additionalData: enrichedAdditionalData }),
+        response_payload: JSON.stringify(providerResponse),
+        status,
+        module: 'BBPS',
+        transaction_type: 'pay',
+        merchant_ref_id: additionalData.merchantRefId || null,
+        http_status: 200,
+        response_time_ms: Date.now() - payStartTime,
+        final_status: status,
+        error_message: status === 'failed' ? (providerResponse.message || 'Payment failed') : null,
+      });
+    } catch (logError) {
+      logger.error('Failed to log BBPS pay call', { error: logError.message });
+    }
+
+    const message =
+      status === 'success' ? 'Payment successful' :
+      status === 'pending' ? 'Payment is processing' :
+      `Payment failed: ${providerResponse.message || 'Unknown error'}`;
+
+    return {
+      success: status === 'success',
+      message,
+      transactionId,
+      provider: providerResponse.provider_txn_id,
+      refunded: refundProcessed,
+    };
+  }
+
+  // ─── USER HISTORY (with date filters) ─────────────────────────────────
+async getUserHistory(userId, serviceType = null, startDate = null, endDate = null, limit = 50, offset = 0) {
+    try {
+      console.log('🔍 getUserHistory - userId:', userId);
+
+      // Check what types exist
+      const typesQuery = `
+        SELECT DISTINCT type, COUNT(*) 
+        FROM transactions 
+        WHERE user_id = $1 
+        GROUP BY type
+      `;
+      const types = await db.query(typesQuery, [userId]);
+      // console.log('📊 Transaction types in DB:', types.rows);
+
+      // Main query with case-insensitive filter
+      let query = `
+        SELECT id, type as service_type, consumer_number, plan_amount as amount, 
+               status, provider_txn_id, provider_name, created_at
+        FROM transactions 
+        WHERE user_id = $1 
+        AND LOWER(type) != 'mobile_recharge'
+      `;
+      const params = [userId];
+      let paramIndex = 2;
+
+      if (serviceType) {
+        query += ` AND LOWER(type) = $${paramIndex}`;
+        params.push(serviceType.toLowerCase());
+        paramIndex++;
+      }
+      if (startDate) {
+        query += ` AND created_at >= $${paramIndex}::date`;
+        params.push(startDate);
+        paramIndex++;
+      }
+      if (endDate) {
+        query += ` AND created_at <= ($${paramIndex}::date + interval '1 day' - interval '1 second')`;
+        params.push(endDate);
+        paramIndex++;
+      }
+
+      query += ` ORDER BY created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+      params.push(limit, offset);
+
+      // console.log('📝 SQL:', query);
+      // console.log('📝 Params:', params);
+
+      const result = await db.query(query, params);
+      console.log(`✅ Found ${result.rows.length} non-recharge transactions`);
+      
+      return result.rows;
+    } catch (error) {
+      console.error('❌ Error:', error.message);
+      logger.error(`Error fetching user history`, { error: error.message });
+      throw error;
+    }
+  }
+  // ─── GET SINGLE TRANSACTION ──────────────────────────────────────────
+  async getTransactionById(userId, transactionId) {
+    try {
+      const result = await db.query(
+        `SELECT id, type as service_type, consumer_number, plan_amount as amount,
+                status, provider_txn_id, provider_name, api_response, created_at, updated_at
+         FROM transactions 
+         WHERE id = $1 AND user_id = $2`,
+        [transactionId, userId]
+      );
+      if (result.rows.length === 0) throw new Error('Transaction not found');
+      return result.rows[0];
+    } catch (error) {
+      logger.error(`Error fetching transaction`, { error: error.message });
+      throw error;
+    }
+  }
+
+  // ─── GET ACTIVE SERVICES ─────────────────────────────────────────────
+  async getActiveServices() {
+    try {
+      const result = await db.query(
+        `SELECT id, name, display_name, category, icon 
+         FROM services 
+         WHERE is_active = true 
+         ORDER BY category, display_name`
+      );
+      return result.rows;
+    } catch (error) {
+      logger.error(`Error fetching services`, { error: error.message });
+      throw error;
+    }
+  }
+
+  // ─── ADMIN: GET ALL PAYMENTS ─────────────────────────────────────────
+  async getAllPayments(filters = {}, limit = 50, offset = 0) {
+    try {
+      let whereClause = "WHERE type != 'MOBILE_RECHARGE'";
+      const params = [];
+      let paramIndex = 1;
+      if (filters.serviceType) {
+        whereClause += ` AND type = $${paramIndex}`;
+        params.push(filters.serviceType);
+        paramIndex++;
+      }
+      if (filters.status) {
+        whereClause += ` AND status = $${paramIndex}`;
+        params.push(filters.status);
+        paramIndex++;
+      }
+      if (filters.search) {
+        whereClause += ` AND consumer_number ILIKE $${paramIndex}`;
+        params.push(`%${filters.search}%`);
+        paramIndex++;
+      }
+      const countQuery = await db.query(
+        `SELECT COUNT(*) FROM transactions ${whereClause}`,
+        params
+      );
+      const result = await db.query(
+        `SELECT t.*, 
+                CONCAT(u.first_name, ' ', u.last_name) as user_name, 
+                u.email, 
+                u.phone as user_mobile
+         FROM transactions t
+         JOIN users u ON u.id = t.user_id
+         ${whereClause}
+         ORDER BY t.created_at DESC
+         LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+        [...params, limit, offset]
+      );
+      return {
+        transactions: result.rows,
+        total: parseInt(countQuery.rows[0].count),
+        limit,
+        offset,
+      };
+    } catch (error) {
+      logger.error(`Error fetching all payments`, { error: error.message });
+      throw error;
+    }
+  }
 }
 
-// Expose a function to save merchantCode after registration – call this from your controller
-const saveMerchantCodeForUser = async (userId, merchantCode) => {
-    // Replace with your actual DB update
-    userMerchantMap.set(userId, merchantCode);
-    // await db.collection('users').updateOne({ _id: userId }, { $set: { bbpsMerchantCode: merchantCode } }, { upsert: true });
-    console.log(`Saved merchantCode ${merchantCode} for user ${userId}`);
-};
-
-// ------------------------------------------------------------------
-// EXPORT all public methods
-module.exports = {
-    authorize,               // only if you need to force re‑auth
-    registerMerchant,
-    fetchBill,
-    payBill,
-    saveMerchantCodeForUser,
-    getStateList,
-    getCityList,
-    // Helper for testing
-    getBearerToken
-};
-
+module.exports = new PaymentService();

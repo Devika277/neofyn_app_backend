@@ -463,7 +463,7 @@ async senderRegistration(data) {
             agentCode: data.agentCode,
             senderState: data.senderState,
             senderCity: data.senderCity,
-            pidData: data.pidData || '<?xml version="1.0" encoding="UTF-8"?><PidOptions ver="1.0"><Opts fCount="1" fType="0" format="0" pidVer="2.0" timeout="10000" otp="" posh="UNKNOWN" env="P" wadh=""/></PidOptions>',
+            pidData: data.pidData || '<?xml version="1.0" encoding="UTF-8"?><PidOptions ver="1.0"><Opts fCount="1" fType="2" format="0" pidVer="2.0" timeout="10000" otp="" posh="UNKNOWN" env="P" wadh=""/></PidOptions>',
             ip: data.ip || '127.0.0.1',
             lat: data.lat || '0.0',
             long: data.long || '0.0',

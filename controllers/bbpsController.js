@@ -1,203 +1,362 @@
-// controllers/bbpsController.js
-const bbpsService = require('../services/BBPS/bbpsService');
+const { v4: uuidv4 } = require('uuid');
+const paymentService = require('../services/paymentService');
 const logger = require('../utils/logger');
+const crypto = require('crypto');
+const db = require('../config/db');
+const walletService = require('../services/walletService');
+
+// Helper to get user's BBPS merchant code from merchant_onboarding table
+async function getUserMerchantCode(userId) {
+    const result = await db.query(
+        `SELECT bbps_merchant_code FROM merchant_onboarding 
+         WHERE user_id = $1 AND status = 'active'`,
+        [userId]
+    );
+    return result.rows[0]?.bbps_merchant_code || null;
+}
 
 /**
- * Helper: Ensure the user has a merchantCode.
- * If not, automatically register the user as a merchant.
+ * Payment Controller – Supports two‑step BBPS flow:
+ *   step = 'fetch' → get bill details
+ *   step = 'pay'   → complete payment
  */
-async function ensureMerchantCode(userId) {
-    let merchantCode = await bbpsService.getUserMerchantCode(userId);
-    if (!merchantCode) {
-        logger.info(`No merchantCode for user ${userId}, registering now...`);
-        const { merchantCode: newCode } = await bbpsService.registerMerchant(userId);
-        await bbpsService.saveMerchantCodeForUser(userId, newCode);
-        merchantCode = newCode;
-    }
-    return merchantCode;
-}
+class PaymentController {
+    /**
+     * POST /api/payments/process
+     * Unified endpoint for both fetch and pay steps.
+     * Request body:
+     *   { step: 'fetch', serviceType, customerId, additionalData, idempotencyKey }
+     *   or
+     *   { step: 'pay', transactionId, serviceType, customerId, additionalData, idempotencyKey }
+     */
+    async processPayment(req, res) {
+        try {
+            const userId = req.user.id;
+            const { step, serviceType, customerId, amount, additionalData, idempotencyKey, transactionId } = req.body;
 
-// GET /api/bbps/categories
-async function getCategories(req, res) {
-    try {
-        // Note: The new BBPS flow doesn't have a direct "categories" endpoint.
-        // You can either fetch from a local list or call a master API.
-        // For now, return a static list (or you can implement a call to /masterapi if needed)
-        const categories = [
-            { id: "ELECTRICITY", name: "Electricity Bill", icon: "⚡" },
-            { id: "WATER", name: "Water Bill", icon: "💧" },
-            { id: "GAS", name: "Gas Bill", icon: "🔥" },
-            { id: "TELECOM", name: "Broadband / Landline", icon: "📞" },
-            { id: "MOBILE", name: "Mobile Recharge", icon: "📱" }
-        ];
-        return res.json({ success: true, data: categories });
-    } catch (err) {
-        logger.error('BBPS getCategories error', { error: err.message });
-        return res.status(500).json({ success: false, error: err.message });
-    }
-}
+            // Basic validation
+            if (!step || !['fetch', 'pay'].includes(step)) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Invalid or missing "step". Use "fetch" or "pay".'
+                });
+            }
 
-// GET /api/bbps/states (uses the encryption-based master API)
-async function getStates(req, res) {
-    try {
-        // Use the existing getStateList from the service (already uses encryption & authorization)
-        const result = await bbpsService.getStateList();
-        return res.json(result);
-    } catch (err) {
-        logger.error('BBPS getStates error', err);
-        return res.status(500).json({ success: false, error: err.message });
-    }
-}
+            if (step === 'fetch') {
+                // Fetch step: need serviceType and customerId
+                if (!serviceType || !customerId) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'Missing required fields for fetch: serviceType, customerId'
+                    });
+                }
+                if (customerId.length < 3) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'Consumer number must be at least 3 characters'
+                    });
+                }
 
-// POST /api/bbps/fetch-bill
-async function fetchBill(req, res) {
-    try {
-        const { serviceType, customerId, billerId, consumerNumber, additionalParams } = req.body;
-        const userId = req.user.id;
+                // Get user's merchant code
+                const merchantCode = await getUserMerchantCode(userId);
+                if (!merchantCode) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'Merchant not onboarded. Please complete BBPS onboarding first.'
+                    });
+                }
 
-        // Normalize inputs
-        const finalServiceType = serviceType || billerId;
-        const finalCustomerId = customerId || consumerNumber;
+                // Merge merchant code into additionalData
+                const enrichedAdditionalData = {
+                    ...(additionalData || {}),
+                    merchantCode,
+                };
 
-        if (!finalServiceType || !finalCustomerId) {
-            return res.status(400).json({
+                logger.info(`PaymentController: Fetch bill for user ${userId}, service: ${serviceType}, customer: ${customerId}`);
+
+                const result = await paymentService.processPayment(
+                    userId,
+                    {
+                        step: 'fetch',
+                        serviceType,
+                        customerId,
+                        additionalData: enrichedAdditionalData,
+                    },
+                    idempotencyKey
+                );
+
+                return res.status(200).json({
+                    success: result.success,
+                    message: result.message,
+                    data: {
+                        transactionId: result.transactionId,
+                        fetchBillResult: result.fetchBillResult
+                    }
+                });
+            }
+
+            if (step === 'pay') {
+                // Pay step: need transactionId (from fetch)
+                if (!transactionId) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'Missing transactionId for pay step'
+                    });
+                }
+
+                // Get user's merchant code (required for pay step too)
+                const merchantCode = await getUserMerchantCode(userId);
+                if (!merchantCode) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'Merchant not onboarded. Please complete BBPS onboarding first.'
+                    });
+                }
+
+                const enrichedAdditionalData = {
+                    ...(additionalData || {}),
+                    merchantCode,
+                };
+
+                logger.info(`PaymentController: Pay bill for user ${userId}, transactionId: ${transactionId}`);
+
+                const result = await paymentService.processPayment(
+                    userId,
+                    {
+                        step: 'pay',
+                        transactionId,
+                        serviceType: serviceType || null,
+                        customerId: customerId || null,
+                        additionalData: enrichedAdditionalData,
+                    },
+                    idempotencyKey
+                );
+
+                return res.status(200).json({
+                    success: result.success,
+                    message: result.message,
+                    data: {
+                        transactionId: result.transactionId,
+                        provider: result.provider,
+                        refunded: result.refunded
+                    }
+                });
+            }
+        } catch (error) {
+            logger.error('PaymentController: Error processing payment', { error: error.message, stack: error.stack });
+
+            // User-friendly error messages
+            if (error.message.includes('Insufficient balance') ||
+                error.message.includes('not found or inactive') ||
+                error.message.includes('Merchant is not onboarded') ||
+                error.message.includes('Please complete the fetch step first')) {
+                return res.status(400).json({
+                    success: false,
+                    error: error.message
+                });
+            }
+
+            return res.status(500).json({
                 success: false,
-                message: "Service type and customer ID are required",
-                received: { serviceType, customerId, billerId, consumerNumber }
+                error: 'Failed to process payment. Please try again.'
             });
         }
-
-        // Ensure user is registered as a merchant (auto-register if needed)
-        await ensureMerchantCode(userId);
-
-        // Call the real fetchBill from bbpsService (encrypts request, decrypts response)
-        const fetchBillResult = await bbpsService.fetchBill(userId, {
-            billerId: finalServiceType,
-            consumerNumber: finalCustomerId,
-            additionalParams: additionalParams || {}
-        });
-
-        // Store the fetch result temporarily (could be in a cache or DB) so that payBill can use it.
-        // For simplicity, we return the whole result to the client; the client must send it back for payment.
-        return res.status(200).json({
-            success: true,
-            data: fetchBillResult
-        });
-    } catch (error) {
-        logger.error('Fetch bill error:', error);
-        return res.status(500).json({
-            success: false,
-            message: error.message,
-            code: error.code || "FETCH_FAILED"
-        });
     }
-}
 
-// POST /api/bbps/pay-bill
-async function payBill(req, res) {
-    try {
-        const { transactionRequest } = req.body;  // Expect the full transactionRequest object from Flutter
-        const userId = req.user.id;
+    /**
+     * GET /api/payments/history
+     * Supports optional query parameters:
+     *   - serviceType (string)
+     *   - startDate (YYYY-MM-DD)
+     *   - endDate   (YYYY-MM-DD)
+     *   - limit, offset
+     */
+    async getUserHistory(req, res) {
+        try {
+            const userId = req.user.id;
+            const serviceType = req.query.serviceType || null;
+            const startDate = req.query.startDate || null;
+            const endDate = req.query.endDate || null;
+            const limit = parseInt(req.query.limit) || 50;
+            const offset = parseInt(req.query.offset) || 0;
 
-        if (!transactionRequest) {
-            return res.status(400).json({
+            const history = await paymentService.getUserHistory(
+                userId,
+                serviceType,
+                startDate,
+                endDate,
+                limit,
+                offset
+            );
+
+            return res.status(200).json({
+                success: true,
+                data: history,
+                pagination: {
+                    limit,
+                    offset,
+                    count: history.length
+                }
+            });
+        } catch (error) {
+            logger.error('PaymentController: Error fetching user history', { error: error.message });
+            return res.status(500).json({
                 success: false,
-                message: "transactionRequest object is required"
+                error: 'Failed to fetch payment history'
             });
         }
+    }
 
-        // Ensure merchant code exists
-        await ensureMerchantCode(userId);
+    /**
+     * GET /api/payments/transaction/:id
+     */
+    async getTransactionById(req, res) {
+        try {
+            const userId = req.user.id;
+            const transactionId = parseInt(req.params.id);
 
-        // Call the real payBill
-        const paymentResult = await bbpsService.payBill(userId, transactionRequest);
+            if (isNaN(transactionId)) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Invalid transaction ID'
+                });
+            }
 
-        // Optionally save the payment record to your database (not shown here)
-        return res.status(200).json({
-            success: paymentResult.success,
-            transactionId: paymentResult.transactionId,
-            transactionRefId: paymentResult.transactionRefId,
-            status: paymentResult.paymentStatus,
-            message: paymentResult.message,
-            rawResponse: paymentResult.rawResponse
-        });
-    } catch (error) {
-        logger.error('Pay bill error:', error);
-        return res.status(500).json({
-            success: false,
-            message: error.message,
-            code: error.code || "PAYMENT_FAILED"
-        });
+            const transaction = await paymentService.getTransactionById(userId, transactionId);
+
+            return res.status(200).json({
+                success: true,
+                data: transaction
+            });
+        } catch (error) {
+            logger.error('PaymentController: Error fetching transaction', { error: error.message });
+
+            if (error.message === 'Transaction not found') {
+                return res.status(404).json({
+                    success: false,
+                    error: 'Transaction not found'
+                });
+            }
+
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to fetch transaction details'
+            });
+        }
+    }
+
+    /**
+     * GET /api/payments/services
+     */
+    async getActiveServices(req, res) {
+        try {
+            const services = await paymentService.getActiveServices();
+
+            return res.status(200).json({
+                success: true,
+                data: services
+            });
+        } catch (error) {
+            logger.error('PaymentController: Error fetching services', { error: error.message });
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to fetch services'
+            });
+        }
+    }
+
+    /**
+     * GET /api/payments/admin/all
+     */
+    async getAllPayments(req, res) {
+        try {
+            const limit = parseInt(req.query.limit) || 50;
+            const offset = parseInt(req.query.offset) || 0;
+            const filters = {
+                serviceType: req.query.serviceType,
+                status: req.query.status,
+                search: req.query.search
+            };
+
+            const result = await paymentService.getAllPayments(filters, limit, offset);
+
+            return res.status(200).json({
+                success: true,
+                data: result.transactions,
+                pagination: {
+                    limit: result.limit,
+                    offset: result.offset,
+                    total: result.total,
+                    count: result.transactions.length
+                }
+            });
+        } catch (error) {
+            logger.error('PaymentController: Error fetching all payments', { error: error.message });
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to fetch payments'
+            });
+        }
+    }
+
+    /**
+     * POST /api/payments/callback
+     * Handle provider callback (webhook) with signature verification
+     */
+    async handleCallback(req, res) {
+        try {
+            const { txn_id, status, amount, hash } = req.body;
+
+            // 1. Verify signature
+            const secret = process.env.CALLBACK_SECRET;
+            if (!secret) {
+                logger.error('CALLBACK_SECRET not set in environment');
+                return res.status(500).json({ success: false, error: 'Server configuration error' });
+            }
+            const expectedHash = crypto.createHash('md5').update(txn_id + amount + secret).digest('hex');
+            if (hash !== expectedHash) {
+                logger.warn(`Invalid callback signature for txn ${txn_id}`);
+                return res.status(401).json({ success: false, error: 'Invalid signature' });
+            }
+
+            // 2. Find transaction by provider_txn_id
+            const transaction = await db.query(
+                'SELECT id, user_id, plan_amount, status FROM transactions WHERE provider_txn_id = $1',
+                [txn_id]
+            );
+            if (transaction.rows.length === 0) {
+                return res.status(404).json({ success: false, error: 'Transaction not found' });
+            }
+
+            const txn = transaction.rows[0];
+            if (txn.status !== 'pending') {
+                return res.status(200).json({ success: true, message: 'Already processed' });
+            }
+
+            // 3. Update transaction status
+            const newStatus = status === 'success' ? 'success' : 'failed';
+            await db.query(
+                'UPDATE transactions SET status = $1, updated_at = NOW() WHERE id = $2',
+                [newStatus, txn.id]
+            );
+
+            // 4. If failed, refund wallet
+            if (newStatus === 'failed') {
+                await walletService.addMoney(
+                    txn.user_id,
+                    txn.plan_amount,
+                    `Refund from callback for payment transaction ${txn.id}`,
+                    null
+                );
+                logger.info(`Refunded ₹${txn.plan_amount} for failed callback payment transaction ${txn.id}`);
+            }
+
+            return res.status(200).json({ success: true, message: 'Callback processed' });
+        } catch (error) {
+            logger.error('Callback error:', error);
+            return res.status(500).json({ success: false, error: 'Internal error' });
+        }
     }
 }
 
-// GET /api/bbps/history (depends on your own DB, not on BBPS gateway)
-async function getBillHistory(req, res) {
-    try {
-        const userId = req.user.id;
-        const { serviceType, limit = 50, offset = 0 } = req.query;
-
-        // This should fetch from your local database where you store past transactions
-        // For demonstration, we return an empty array (implement your own DB storage)
-        const history = {
-            success: true,
-            bills: [],   // replace with actual DB query
-            total: 0
-        };
-
-        return res.status(200).json(history);
-    } catch (error) {
-        logger.error('Get bill history error:', error);
-        return res.status(500).json({
-            success: false,
-            message: error.message
-        });
-    }
-}
-
-// GET /api/bbps/services (static list, or fetch from master)
-async function getServices(req, res) {
-    try {
-        // You could also call bbpsService.getServiceList() if available in the future
-        const services = [
-            { name: 'ELECTRICITY', display_name: 'Electricity Bill', category: 'UTILITY' },
-            { name: 'WATER', display_name: 'Water Bill', category: 'UTILITY' },
-            { name: 'GAS', display_name: 'Gas Bill', category: 'UTILITY' },
-            { name: 'TELECOM', display_name: 'Broadband Bill', category: 'UTILITY' },
-            { name: 'MOBILE', display_name: 'Mobile Recharge', category: 'PREPAID' }
-        ];
-        return res.status(200).json({ success: true, services });
-    } catch (error) {
-        logger.error('Get services error:', error);
-        return res.status(500).json({ success: false, message: error.message });
-    }
-}
-
-// Optional: Explicit endpoint for merchant registration (can be called separately)
-async function registerMerchantEndpoint(req, res) {
-    try {
-        const userId = req.user.id;
-        const merchantCode = await ensureMerchantCode(userId);
-        return res.status(200).json({
-            success: true,
-            merchantCode,
-            message: "Merchant registered successfully"
-        });
-    } catch (error) {
-        logger.error('Merchant registration error:', error);
-        return res.status(500).json({
-            success: false,
-            message: error.message
-        });
-    }
-}
-
-module.exports = {
-    getCategories,
-    getStates,
-    fetchBill,
-    payBill,
-    getBillHistory,
-    getServices,
-    registerMerchantEndpoint   // optional extra endpoint
-};
+module.exports = new PaymentController();
