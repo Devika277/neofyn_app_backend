@@ -1,5 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
-const paymentService = require('../services/paymentService');
+const paymentService = require('../services/BBPS/bbpsService');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 const db = require('../config/db');
