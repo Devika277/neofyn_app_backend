@@ -4,13 +4,13 @@
 // Change: const utrValue = providerResult.utr || providerResult.providerRefId || null;
 // To:     const utrValue = providerResult.utr || null;
 
-const dmtService = require('../services/dmtServiceNew');
+const dmtService = require('../services/DMT/dmtServiceNew');
 const db = require('../config/db');
 const axios = require('axios');
 const walletService = require('../services/walletService');
 const payoutProvider = require('../providers/vimopayProvider');
 const dmtProviderRouter = require('../providers/dmtProviderRouter');
-const commissionService = require('../services/commissionService');
+const commissionService = require('../services/commission/commissionService');
 
 const getUserId = (req) => req.user.id;
 
@@ -350,7 +350,14 @@ exports.createDmtTransfer = async (req, res) => {
       remark
     });
 
-    res.json(result);
+    // ✅ Return UTR number (similar to payout returning bank_ref_no)
+    res.json({
+      success: true,
+      transactionId: result.transactionId,
+      utrNumber: result.utrNumber,
+      providerStatus: result.providerStatus,
+      message: 'Transfer successful'
+    });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

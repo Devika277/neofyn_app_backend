@@ -126,53 +126,164 @@ async function getMyBankAccount(userId) {
  * @returns {Promise<object>} the saved bank account record
  */
 async function upsertBankAccount(userId, data) {
-  const { account_name, account_number, ifsc_code, bank_name, mobile_number, state_code, vimopay_bank_code } = data;
+  const { account_name, account_number, ifsc_code, bank_name, mobile_number, state_code, vimopay_bank_code, accountId } = data;
 
-  if (!account_number || !ifsc_code) {
-    throw new Error('Account number and IFSC are required');
-  }
+  if (!account_number || !ifsc_code) throw new Error('Account number and IFSC are required');
 
   const client = await db.connect();
   try {
     await client.query('BEGIN');
 
-    // Remove any existing primary bank account for this user
-    await client.query(
-      `DELETE FROM agent_bank_accounts
-       WHERE user_id = $1 AND is_primary = true`,
+    // If accountId provided, UPDATE existing account
+    if (accountId) {
+      const check = await client.query(
+        'SELECT id FROM agent_bank_accounts WHERE id = $1 AND user_id = $2 AND is_active = true',
+        [accountId, userId]
+      );
+      if (check.rows.length === 0) throw new Error('Account not found');
+
+      const result = await client.query(
+        `UPDATE agent_bank_accounts SET account_name=$1, account_number=$2, ifsc_code=$3, bank_name=$4, mobile_number=$5, state_code=$6, vimopay_bank_code=$7, updated_at=NOW() WHERE id=$8 AND user_id=$9 RETURNING *`,
+        [account_name||null, account_number, ifsc_code, bank_name||null, mobile_number||null, state_code||null, vimopay_bank_code||null, accountId, userId]
+      );
+      await client.query('COMMIT');
+      return result.rows[0];
+    }
+
+    // Otherwise INSERT new account (does NOT delete existing)
+    const countResult = await client.query(
+      'SELECT COUNT(*) FROM agent_bank_accounts WHERE user_id = $1 AND is_active = true',
       [userId]
     );
+    const isFirst = parseInt(countResult.rows[0].count) === 0;
 
-    const insertQuery = `
-      INSERT INTO agent_bank_accounts
-        (user_id, account_name, account_number, ifsc_code, bank_name, mobile_number, state_code, vimopay_bank_code, is_primary, is_active, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, true, NOW(), NOW())
-      RETURNING id, user_id, account_name, account_number, ifsc_code, bank_name, mobile_number, state_code, vimopay_bank_code, is_primary, is_active, created_at, updated_at
-    `;
-    const values = [
-      userId,
-      account_name || null,
-      account_number,
-      ifsc_code,
-      bank_name || null,
-      mobile_number || null,
-      state_code || null,
-      vimopay_bank_code || null
-    ];
-    const result = await client.query(insertQuery, values);
-    const newAccount = result.rows[0];
+    const result = await client.query(
+      `INSERT INTO agent_bank_accounts (user_id, account_name, account_number, ifsc_code, bank_name, mobile_number, state_code, vimopay_bank_code, is_primary, is_active, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,NOW(),NOW()) RETURNING *`,
+      [userId, account_name||null, account_number, ifsc_code, bank_name||null, mobile_number||null, state_code||null, vimopay_bank_code||null, isFirst]
+    );
 
     await client.query('COMMIT');
-    return newAccount;
+    return result.rows[0];
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('upsertBankAccount error:', error);
     throw new Error('Failed to save bank account');
   } finally {
     client.release();
   }
 }
+/**
+ * Get all active bank accounts for the agent
+ */
+async function getAllBankAccounts(userId) {
+  try {
+    const query = `
+      SELECT id, account_name, account_number, ifsc_code, bank_name, 
+             mobile_number, state_code, vimopay_bank_code, is_primary, is_active, created_at, updated_at
+      FROM agent_bank_accounts
+      WHERE user_id = $1 AND is_active = true
+      ORDER BY is_primary DESC, created_at ASC
+    `;
+    const result = await db.query(query, [userId]);
+    return result.rows;
+  } catch (error) {
+    console.error('getAllBankAccounts error:', error.message);
+    return [];
+  }
+}
 
+/**
+ * Get a specific bank account by ID
+ */
+async function getBankAccountById(userId, accountId) {
+  try {
+    const query = `
+      SELECT id, account_name, account_number, ifsc_code, bank_name, 
+             mobile_number, state_code, vimopay_bank_code, is_primary, is_active
+      FROM agent_bank_accounts
+      WHERE id = $1 AND user_id = $2 AND is_active = true
+    `;
+    const result = await db.query(query, [accountId, userId]);
+    return result.rows.length > 0 ? result.rows[0] : null;
+  } catch (error) {
+    console.error('getBankAccountById error:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Set a specific account as primary
+ */
+async function setDefaultBankAccount(userId, accountId) {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    
+    const check = await client.query(
+      'SELECT id FROM agent_bank_accounts WHERE id = $1 AND user_id = $2 AND is_active = true',
+      [accountId, userId]
+    );
+    if (check.rows.length === 0) throw new Error('Account not found');
+    
+    // Unset all primary for this user
+    await client.query('UPDATE agent_bank_accounts SET is_primary = false, updated_at = NOW() WHERE user_id = $1', [userId]);
+    
+    // Set selected as primary
+    const result = await client.query(
+      'UPDATE agent_bank_accounts SET is_primary = true, updated_at = NOW() WHERE id = $1 RETURNING *',
+      [accountId]
+    );
+    
+    await client.query('COMMIT');
+    return result.rows[0];
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Soft delete a bank account
+ */
+async function deleteBankAccount(userId, accountId) {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    
+    const check = await client.query(
+      'SELECT id, is_primary FROM agent_bank_accounts WHERE id = $1 AND user_id = $2 AND is_active = true',
+      [accountId, userId]
+    );
+    if (check.rows.length === 0) { await client.query('ROLLBACK'); return false; }
+    
+    const countResult = await client.query(
+      'SELECT COUNT(*) FROM agent_bank_accounts WHERE user_id = $1 AND is_active = true',
+      [userId]
+    );
+    if (parseInt(countResult.rows[0].count) <= 1) throw new Error('Cannot delete last account');
+    
+    await client.query('UPDATE agent_bank_accounts SET is_active = false, updated_at = NOW() WHERE id = $1', [accountId]);
+    
+    if (check.rows[0].is_primary) {
+      const oldest = await client.query(
+        'SELECT id FROM agent_bank_accounts WHERE user_id = $1 AND is_active = true ORDER BY created_at ASC LIMIT 1',
+        [userId]
+      );
+      if (oldest.rows.length > 0) {
+        await client.query('UPDATE agent_bank_accounts SET is_primary = true WHERE id = $1', [oldest.rows[0].id]);
+      }
+    }
+    
+    await client.query('COMMIT');
+    return true;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 /**
  * Get AEPS wallet balance from aeps_wallets table
  * @param {number} userId 
@@ -455,9 +566,13 @@ async function processPayout(userId, data) {
 
 module.exports = {
   getMyBankAccount,
+  getAllBankAccounts,
+  getBankAccountById,
+  setDefaultBankAccount,
+  upsertBankAccount,
+  deleteBankAccount,
   getAepsBalance,
   getPayoutLimits,
-  processPayout,
-  upsertBankAccount,
-  getPayoutCharge
+  getPayoutCharge,
+  processPayout
 };

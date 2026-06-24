@@ -503,8 +503,7 @@ async function listBeneficiaries(userId) {
     FROM agent_bank_accounts 
     WHERE user_id = $1 
       AND is_active = true 
-      AND is_primary = false
-    ORDER BY created_at DESC
+      ORDER BY is_primary DESC, created_at DESC
   `;
   
   const result = await db.query(query, [userId]);
