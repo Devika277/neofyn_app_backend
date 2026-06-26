@@ -1,18 +1,24 @@
 const { v4: uuidv4 } = require('uuid');
-const paymentService = require('../services/paymentService');
+const paymentService = require('../services/bbps/bbpsService');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 const db = require('../config/db');
 const walletService = require('../services/walletService');
 
 // Helper to get user's BBPS merchant code from merchant_onboarding table
-async function getUserMerchantCode(userId) {
+async function getMerchantInfo(userId) {
     const result = await db.query(
-        `SELECT bbps_merchant_code FROM merchant_onboarding 
+        `SELECT bbps_merchant_code, latitude, longitude 
+         FROM merchant_onboarding 
          WHERE user_id = $1 AND status = 'active'`,
         [userId]
     );
-    return result.rows[0]?.bbps_merchant_code || null;
+    if (!result.rows[0]) return null;
+    return {
+        merchantCode: result.rows[0].bbps_merchant_code,
+        latitude: result.rows[0].latitude,
+        longitude: result.rows[0].longitude,
+    };
 }
 
 /**
@@ -58,19 +64,21 @@ class PaymentController {
                 }
 
                 // Get user's merchant code
-                const merchantCode = await getUserMerchantCode(userId);
-                if (!merchantCode) {
-                    return res.status(400).json({
-                        success: false,
-                        error: 'Merchant not onboarded. Please complete BBPS onboarding first.'
-                    });
-                }
+                const merchantInfo = await getMerchantInfo(userId);
+    if (!merchantInfo) {
+        return res.status(400).json({
+            success: false,
+            error: 'Merchant not onboarded. Please complete BBPS onboarding first.'
+        });
+    }
 
                 // Merge merchant code into additionalData
                 const enrichedAdditionalData = {
-                    ...(additionalData || {}),
-                    merchantCode,
-                };
+        ...(additionalData || {}),
+        merchantCode: merchantInfo.merchantCode,
+        lat: merchantInfo.latitude || '0.0',
+        long: merchantInfo.longitude || '0.0',
+    };
 
                 logger.info(`PaymentController: Fetch bill for user ${userId}, service: ${serviceType}, customer: ${customerId}`);
 
@@ -96,73 +104,92 @@ class PaymentController {
             }
 
             if (step === 'pay') {
-                // Pay step: need transactionId (from fetch)
-                if (!transactionId) {
-                    return res.status(400).json({
-                        success: false,
-                        error: 'Missing transactionId for pay step'
-                    });
-                }
-
-                // Get user's merchant code (required for pay step too)
-                const merchantCode = await getUserMerchantCode(userId);
-                if (!merchantCode) {
-                    return res.status(400).json({
-                        success: false,
-                        error: 'Merchant not onboarded. Please complete BBPS onboarding first.'
-                    });
-                }
-
-                const enrichedAdditionalData = {
-                    ...(additionalData || {}),
-                    merchantCode,
-                };
-
-                logger.info(`PaymentController: Pay bill for user ${userId}, transactionId: ${transactionId}`);
-
-                const result = await paymentService.processPayment(
-                    userId,
-                    {
-                        step: 'pay',
-                        transactionId,
-                        serviceType: serviceType || null,
-                        customerId: customerId || null,
-                        additionalData: enrichedAdditionalData,
-                    },
-                    idempotencyKey
-                );
-
-                return res.status(200).json({
-                    success: result.success,
-                    message: result.message,
-                    data: {
-                        transactionId: result.transactionId,
-                        provider: result.provider,
-                        refunded: result.refunded
-                    }
-                });
-            }
-        } catch (error) {
-            logger.error('PaymentController: Error processing payment', { error: error.message, stack: error.stack });
-
-            // User-friendly error messages
-            if (error.message.includes('Insufficient balance') ||
-                error.message.includes('not found or inactive') ||
-                error.message.includes('Merchant is not onboarded') ||
-                error.message.includes('Please complete the fetch step first')) {
-                return res.status(400).json({
-                    success: false,
-                    error: error.message
-                });
-            }
-
-            return res.status(500).json({
-                success: false,
-                error: 'Failed to process payment. Please try again.'
-            });
-        }
+    // Pay step: need transactionId (from fetch)
+    if (!transactionId) {
+        return res.status(400).json({
+            success: false,
+            error: 'Missing transactionId for pay step'
+        });
     }
 
+    // ✅ Extract the amount sent by the frontend
+    const payAmount = req.body.amount ? parseFloat(req.body.amount) : undefined;
+
+    // Get user's merchant code (required for pay step too)
+    const merchantInfo = await getMerchantInfo(userId);
+    if (!merchantInfo) {
+        return res.status(400).json({
+            success: false,
+            error: 'Merchant not onboarded. Please complete BBPS onboarding first.'
+        });
+    }
+
+    const enrichedAdditionalData = {
+        ...(additionalData || {}),
+        merchantCode: merchantInfo.merchantCode,
+        lat: merchantInfo.latitude || '0.0',
+        long: merchantInfo.longitude || '0.0',
+    };
+
+    logger.info(`PaymentController: Pay bill for user ${userId}, transactionId: ${transactionId}, amount: ${payAmount}`);
+
+    const result = await paymentService.processPayment(
+        userId,
+        {
+            step: 'pay',
+            transactionId,
+            serviceType: serviceType || null,
+            customerId: customerId || null,
+            amount: payAmount,                     // ✅ now passed correctly
+            additionalData: enrichedAdditionalData,
+        },
+        idempotencyKey
+    );
+
+    return res.status(200).json({
+        success: result.success,
+        message: result.message,
+        data: {
+            transactionId: result.transactionId,
+            provider: result.provider,
+            refunded: result.refunded
+        }
+    });
+}
+        } catch (error) {
+    logger.error('PaymentController: Error processing payment', {
+        error: error.message,
+        stack: error.stack,
+    });
+
+    // Existing user‑friendly checks
+    if (error.message.includes('Insufficient balance') ||
+        error.message.includes('not found or inactive') ||
+        error.message.includes('Merchant is not onboarded') ||
+        error.message.includes('Please complete the fetch step first')) {
+        return res.status(400).json({
+            success: false,
+            error: error.message,
+        });
+    }
+
+    // ✅ NEW: Catch VimoPay fetch / validation errors
+    if (error.message.includes('Incorrect / invalid') ||
+        error.message.includes('Fetch bill failed') ||
+        error.message.includes('validation failed')) {
+        return res.status(400).json({
+            success: false,
+            error: error.message,
+        });
+    }
+
+    // Fallback for any other unexpected error
+    return res.status(500).json({
+        success: false,
+        error: 'Failed to process payment. Please try again.',
+    });
+}
+    }
     /**
      * GET /api/payments/history
      * Supports optional query parameters:

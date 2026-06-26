@@ -48,7 +48,12 @@ app.get('/', (req, res) => res.json({
         merchant: "/api/merchant",
         recharge: "/api/recharge",
         bbps: "/api/bbps",
-        aeps: "/api/aeps"
+        aeps: "/api/aeps",
+        payout: "/api/payout",
+        wallet: "/api/wallet",
+
+        
+
     }
 }));
 
@@ -61,10 +66,14 @@ app.use('/api/auth', authRoutes);
 app.use('/api/dmt', dmtRoutes);
 app.use('/api/master', masterRoutes);
 app.use('/api/merchant', merchantRoutes);
+
 app.use('/api/recharge', require('./routes/rechargeRoutes'));
 app.use('/api/bbps', require('./routes/bbpsRoutes'));
+app.use('/api/payments', require('./routes/paymentRoutes'));
+
 
 // NEW: AEPS Routes
+
 app.use('/api/aeps', aepsRoutes);
 
 // app.use('/api/aepsapi', aepsRoutes); // This makes the endpoint: /api/aepsapi/2fa
@@ -89,6 +98,20 @@ app.use((err, req, res, next) => {
         message: err.message || 'Internal server error'
     });
 });
+
+
+
+console.log('✅ Routes mounted:');
+console.log('   - /api/auth');
+console.log('   - /api/dmt');
+console.log('   - /api/master');
+console.log('   - /api/merchant');
+console.log('   - /api/recharge');
+console.log('   - /api/bbps');
+console.log('   - /api/aeps');
+console.log('   - /api/payout');
+console.log('   - /api/wallet');
+console.log('   - /api/beneficiary');
 
 // ========== START SERVER ==========
 const PORT = process.env.PORT || 5000;

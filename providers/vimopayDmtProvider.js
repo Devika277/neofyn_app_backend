@@ -9,7 +9,32 @@ let cachedStateList = null;
 let stateListExpiry = null;
 const cachedCityLists = {};
 const cityListExpiry = {};
-
+const stateCoordinates = {
+  "Kerala": { lat: "10.8505", long: "76.2711" },
+  "KL": { lat: "10.8505", long: "76.2711" },
+  "Tamil Nadu": { lat: "11.1271", long: "78.6569" },
+  "TN": { lat: "11.1271", long: "78.6569" },
+  "Karnataka": { lat: "15.3173", long: "75.7139" },
+  "KA": { lat: "15.3173", long: "75.7139" },
+  "Maharashtra": { lat: "19.7515", long: "75.7139" },
+  "MH": { lat: "19.7515", long: "75.7139" },
+  "Delhi": { lat: "28.7041", long: "77.1025" },
+  "DL": { lat: "28.7041", long: "77.1025" },
+  "Uttar Pradesh": { lat: "26.8467", long: "80.9462" },
+  "UP": { lat: "26.8467", long: "80.9462" },
+  "Gujarat": { lat: "22.2587", long: "71.1924" },
+  "GJ": { lat: "22.2587", long: "71.1924" },
+  "Rajasthan": { lat: "27.0238", long: "74.2179" },
+  "RJ": { lat: "27.0238", long: "74.2179" },
+  "West Bengal": { lat: "22.9868", long: "87.8550" },
+  "WB": { lat: "22.9868", long: "87.8550" },
+  "Bihar": { lat: "25.0961", long: "85.3131" },
+  "BR": { lat: "25.0961", long: "85.3131" },
+  "Andhra Pradesh": { lat: "15.9129", long: "79.7400" },
+  "AP": { lat: "15.9129", long: "79.7400" },
+  "Telangana": { lat: "17.1232", long: "79.2088" },
+  "TS": { lat: "17.1232", long: "79.2088" }
+};
 async function getAuthToken() {
   if (cachedToken && tokenExpiry && Date.now() < tokenExpiry) {
     return cachedToken;
@@ -103,15 +128,20 @@ async function sendDmtTransfer(params) {
     beneficiaryMobileNumber: String(beneficiary.mobile || remitter.mobile || '9999999999'),
     beneficiaryName: cleanedName,
     beneficiaryLocation: beneficiary.location || 'MH',
-    lat: String(lat !== undefined && lat !== null ? lat : '0.0'),
-    long: String(long !== undefined && long !== null ? long : '0.0'),
+    // lat: String(lat !== undefined && lat !== null ? lat : '0.0'),
+    // long: String(long !== undefined && long !== null ? long : '0.0'),
+    // lat: "10.8505",
+// long: "76.2711",
+lat: String(lat && lat !== '0.0' && lat !== 0 ? lat : (stateCoordinates[beneficiary.location]?.lat || '20.5937')),
+long: String(long && long !== '0.0' && long !== 0 ? long : (stateCoordinates[beneficiary.location]?.long || '78.9629')),
     udf1: '',
     udf2: '',
     udf3: '',
     remitterMobile: String(remitter.mobile),
     remitterName: cleanName(remitter.name)
   };
-
+console.log("LOCATION DEBUG RAW:", beneficiary.location);
+console.log("BENEFICIARY OBJECT:", beneficiary);
   console.log('[VimoPay DMT] Sending payload:', JSON.stringify(payload, null, 2));
 
   const encryptedBody = encrypt(JSON.stringify(payload));

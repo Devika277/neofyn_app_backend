@@ -102,23 +102,32 @@ if (!beneficiary.bene_state) {
 let stateNumeric = beneficiary.bene_state; // fallback (should not be used)
 try {
   const rawStates = await payoutProvider.getStateList();
-  
+   // ✅ LOG ALL STATES
+  console.log('[DMT DEBUG] Total states from provider:', rawStates.length);
+  console.log('[DMT DEBUG] ALL STATES:', JSON.stringify(rawStates));
   // Extract valid codes (two‑letter) for validation
   const validStateCodes = rawStates.map(s => s.stateCode || s.code || s.state_id);
   console.log('[DMT] Full valid state codes:', validStateCodes);
+  console.log('[DMT DEBUG] ALL Valid state codes:', validStateCodes);
+  console.log('[DMT DEBUG] Our bene_state:', beneficiary.bene_state);
+  console.log('[DMT DEBUG] Is our state in valid codes?', validStateCodes.includes(beneficiary.bene_state));
 
   if (!validStateCodes.includes(beneficiary.bene_state)) {
+      console.log('[DMT DEBUG] ❌ STATE NOT FOUND! Our state:', beneficiary.bene_state);
+    console.log('[DMT DEBUG] Available codes:', validStateCodes);
     throw new Error(
       `Invalid state code: "${beneficiary.bene_state}". ` +
       `Valid codes: ${validStateCodes.join(', ')}`
     );
   }
+  console.log('[DMT DEBUG] ✅ State found!');
 
   // Find the state object
   const stateObj = rawStates.find(s => (s.stateCode || s.code || s.state_id) === beneficiary.bene_state);
   if (stateObj) {
     // Extract numeric ID – adjust field names as per actual response
-    stateNumeric = stateObj.stateId || stateObj.id || stateObj.state_id || stateObj.codeId;
+    // stateNumeric = stateObj.stateId || stateObj.id || stateObj.state_id || stateObj.codeId;
+     stateNumeric = stateObj.code || stateObj.stateCode || stateObj.stateId || stateObj.id || stateObj.state_id || stateObj.codeId;
     console.log(`[DMT] Mapped state code "${beneficiary.bene_state}" to numeric ID "${stateNumeric}"`);
   } else {
     throw new Error(`State object not found for code "${beneficiary.bene_state}"`);
@@ -206,12 +215,13 @@ try {
         name: beneficiary.account_holder_name,
         mobile: beneficiary.beneficiary_mobile || '9999999999',
         location: stateNumeric,
+        // location: beneficiary.bene_state.trim().toUpperCase(),
         bankCode: beneficiary.bank_code
       },
       lat: lat || '0.0',
       long: long || '0.0'
     };
-
+console.log("[DMT] FINAL STATE SENT:", stateNumeric);
     debug.log('CALLING_PROVIDER', providerPayload);
 
     const providerStartTime = Date.now();

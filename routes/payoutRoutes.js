@@ -214,6 +214,11 @@ router.get('/transactions', payoutController.getMyPayoutTransactions);
  * GET /api/payout/status/:merchantRefId
  * Get transaction status by merchant reference ID
  */
+// ✅ UPDATED ROUTE - Get transaction status by merchant reference ID
+/**
+ * GET /api/payout/status/:merchantRefId
+ * Get transaction status with full deduction breakdown and wallet balances
+ */
 router.get('/status/:merchantRefId', async (req, res) => {
   try {
     const { merchantRefId } = req.params;
@@ -221,22 +226,25 @@ router.get('/status/:merchantRefId', async (req, res) => {
     
     console.log(`[Status API] Fetching status for merchantRefId: ${merchantRefId}`);
     
+    // ✅ Get transaction with all fields including payout_charge and total_deduction
     const result = await db.query(
       `SELECT 
         id,
         user_id,
         amount,
-        transfer_mode as paymentMode,
+        payout_charge,
+        total_deduction,
+        transfer_mode as paymentmode,
         status,
-        merchant_ref_id as merchantRefId,
-        provider_ref_id as providerRefId,
-        bank_ref_no as bankRefNo,
+        merchant_ref_id as merchantrefid,
+        provider_ref_id as providerrefid,
+        bank_ref_no as bankrefno,
         failure_reason,
         created_at,
         updated_at,
-        bene_account_name as beneficiaryName,
-        bene_account_number as beneficiaryAccountNumber,
-        bene_ifsc as beneficiaryIFSC
+        bene_account_name as beneficiaryname,
+        bene_account_number as beneficiaryaccountnumber,
+        bene_ifsc as beneficiaryifsc
       FROM payout_transactions 
       WHERE merchant_ref_id = $1 AND user_id = $2`,
       [merchantRefId, userId]
@@ -249,10 +257,47 @@ router.get('/status/:merchantRefId', async (req, res) => {
       });
     }
     
-    res.json({
+    const tx = result.rows[0];
+    
+    // ✅ Get current wallet balances
+    const [aepsWallet, mainWallet] = await Promise.all([
+      db.query('SELECT balance FROM aeps_wallets WHERE user_id = $1', [userId]),
+      db.query('SELECT balance FROM wallets WHERE user_id = $1', [userId])
+    ]);
+    
+    const aepsBalance = aepsWallet.rows[0] ? parseFloat(aepsWallet.rows[0].balance) : 0;
+    const mainBalance = mainWallet.rows[0] ? parseFloat(mainWallet.rows[0].balance) : 0;
+    
+    // ✅ Build complete response with deduction breakdown
+    const response = {
       success: true,
-      data: result.rows[0]
+      data: {
+        ...tx,
+        // Ensure numeric values
+        amount: parseFloat(tx.amount || 0),
+        payout_charge: parseFloat(tx.payout_charge || 0),
+        total_deduction: parseFloat(tx.total_deduction || tx.amount || 0),
+        // ✅ Current wallet balances
+        aeps_balance: aepsBalance,
+        main_balance: mainBalance,
+        // Status-specific message
+        message: tx.status === 'success' 
+          ? 'Payout completed successfully'
+          : tx.status === 'failed'
+          ? tx.failure_reason || 'Transaction failed'
+          : 'Transaction is being processed'
+      }
+    };
+    
+    console.log(`[Status API] Response:`, {
+      amount: response.data.amount,
+      payout_charge: response.data.payout_charge,
+      total_deduction: response.data.total_deduction,
+      aeps_balance: response.data.aeps_balance,
+      main_balance: response.data.main_balance
     });
+    
+    res.json(response);
     
   } catch (error) {
     console.error('[Status API] Error:', error.message);

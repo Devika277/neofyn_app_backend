@@ -209,14 +209,22 @@ async function createPayout(req, res, next) {
  * Get agent's own payout transaction history
  * Query: ?status=, from=, to=
  */
+/**
+ * GET /api/payout/transactions
+ * Get agent's own payout transaction history
+ * Query: ?status=, from=, to=
+ */
 async function getMyPayoutTransactions(req, res, next) {
   try {
     const userId = req.user.id;
     const { status, from, to } = req.query;
 
     let query = `
-      SELECT id, amount, transfer_mode, status, merchant_ref_id, provider_ref_id,
-             bank_ref_no, failure_reason, created_at, updated_at
+      SELECT id, amount, payout_charge, total_deduction, transfer_mode, status, 
+             merchant_ref_id, provider_ref_id,
+             bank_ref_no, failure_reason, 
+             bene_account_name, bene_account_number, bene_ifsc,
+             created_at, updated_at
       FROM payout_transactions
       WHERE user_id = $1 AND wallet_source = 'aeps'
     `;
@@ -308,6 +316,10 @@ async function adminGetPayoutTransactions(req, res, next) {
  * POST /api/payout/callback
  * VimoPay webhook for final transaction status updates
  */
+/**
+ * POST /api/payout/callback
+ * VimoPay webhook for final transaction status updates
+ */
 async function payoutWebhook(req, res, next) {
   try {
     const body = req.body;
@@ -340,26 +352,54 @@ async function payoutWebhook(req, res, next) {
       merchantRefId
     ]);
 
-    // If failed, refund the AEPS wallet
+    // ✅ If failed, refund BOTH AEPS wallet AND Main wallet commission
     if (finalStatus === 'failed') {
       const txnQuery = await db.query(
-        'SELECT user_id, amount FROM payout_transactions WHERE merchant_ref_id = $1',
+        'SELECT user_id, amount, payout_charge FROM payout_transactions WHERE merchant_ref_id = $1',
         [merchantRefId]
       );
 
       if (txnQuery.rows.length > 0) {
-        const { user_id, amount } = txnQuery.rows[0];
+        const { user_id, amount, payout_charge } = txnQuery.rows[0];
+        const charge = parseFloat(payout_charge || 0);
+        
+        // ✅ Refund principal to AEPS wallet
         await db.query(
           'UPDATE aeps_wallets SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2',
           [amount, user_id]
         );
 
-        // Insert refund ledger entry
+        // Insert AEPS refund ledger entry
         await db.query(`
           INSERT INTO aeps_wallet_ledger (aeps_wallet_id, transaction_type, amount, balance_after, description, created_at)
           SELECT id, 'payout_refund', $1, balance, $2, NOW()
           FROM aeps_wallets WHERE user_id = $3
         `, [amount, `Refund for failed payout (callback): ${responseMessage || 'Provider failure'}`, user_id]);
+
+        // ✅ Refund commission to Main wallet (if any)
+        if (charge > 0) {
+          const mainWallet = await db.query(
+            'SELECT id, balance FROM wallets WHERE user_id = $1 FOR UPDATE',
+            [user_id]
+          );
+          
+          if (mainWallet.rows.length > 0) {
+            const newMainBalance = parseFloat(mainWallet.rows[0].balance) + charge;
+            
+            await db.query(
+              'UPDATE wallets SET balance = $1, updated_at = NOW() WHERE user_id = $2',
+              [newMainBalance, user_id]
+            );
+
+            await db.query(
+              `INSERT INTO wallet_ledger (wallet_id, transaction_type, amount, balance_after, description, reference_id)
+               VALUES ($1, $2, $3, $4, $5, $6)`,
+              [mainWallet.rows[0].id, 'credit', charge, newMainBalance,
+               `Refund for failed payout commission (callback): ${responseMessage || 'Provider failure'}`, 
+               `CB_${merchantRefId}`]
+            );
+          }
+        }
       }
     }
 

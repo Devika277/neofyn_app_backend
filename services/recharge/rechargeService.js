@@ -3,7 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../../config/db');
 const logger = require('../../utils/logger');
 const walletService = require('../walletService');
-const providerRouter = require('../../routes/providerRouter');
+const providerRouter = require('../../services/providerRouter');
 const commissionEngine = require('../Commission/commissionEngine');
 const { processCommission } = require('../Commission/commissionService');
 

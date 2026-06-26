@@ -2,7 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../../config/db');
 const logger = require('../../utils/logger');
 const walletService = require('../walletService');
-const providerRouter = require('../../routes/providerRouter');
+const providerRouter = require('../providerRouter');
 const { processCommission } = require('../Commission/commissionService'); // ✅ only commission service
 
 class PaymentService {
@@ -90,6 +90,12 @@ class PaymentService {
       additionalData,
     });
 
+
+          // If the provider returned an error, throw it immediately (rollback transaction)
+      if (fetchResult && fetchResult.error) {
+          throw new Error(fetchResult.error);
+      }
+
     const insertResult = await client.query(
       `INSERT INTO transactions 
        (user_id, type, consumer_number, plan_amount, status, idempotency_key, api_response) 
@@ -106,6 +112,7 @@ class PaymentService {
       ]
     );
     const transactionId = insertResult.rows[0].id;
+    
 
     if (fetchResult.fetchRefId) {
       await client.query(
@@ -175,18 +182,20 @@ class PaymentService {
 
     // Retrieve fetch transaction
     const fetchTx = await client.query(
-      `SELECT id, plan_amount, provider_txn_id, status 
-       FROM transactions 
-       WHERE id = $1 AND user_id = $2 AND type = $3`,
-      [transactionId, userId, serviceType]
-    );
-    if (fetchTx.rows.length === 0) {
-      throw new Error('No fetch transaction found. Please complete the fetch step first.');
-    }
+    `SELECT id, plan_amount, provider_txn_id, status, type
+     FROM transactions 
+     WHERE id = $1 AND user_id = $2`,
+    [transactionId, userId]
+);
+if (fetchTx.rows.length === 0) {
+    throw new Error('No fetch transaction found. Please complete the fetch step first.');
+}
     const tx = fetchTx.rows[0];
     if (tx.status !== 'pending') {
       throw new Error('This transaction is no longer pending.');
     }
+
+    const serviceTypeFromDb = tx.type;
 
     const fetchRefId = tx.provider_txn_id;
     if (!fetchRefId) {
@@ -275,13 +284,23 @@ class PaymentService {
 
     // Handle failure – refund (no commission reversal needed)
     let refundProcessed = false;
-    if (status === 'failed') {
-      const refundResult = await walletService.addMoney(
-        userId, amount, `Refund for failed bill payment ${transactionId}`, null
-      );
-      logger.info(`Refund processed. New balance: ${refundResult.newBalance}`);
-      refundProcessed = true;
-    }
+    if (status === 'failed' || status === 'pending') {
+    const reason = status === 'pending'
+        ? `Refund for pending bill payment ${transactionId}`
+        : `Refund for failed bill payment ${transactionId}`;
+
+    const refundResult = await walletService.addMoney(
+        userId, amount, reason, null
+    );
+    logger.info(`Refund processed (${status}). New balance: ${refundResult.newBalance}`);
+    refundProcessed = true;
+
+    // Also update the transaction status to 'failed' so it's not left as pending
+    await client.query(
+        `UPDATE transactions SET status = 'failed', updated_at = NOW() WHERE id = $1`,
+        [transactionId]
+    );
+}
 
     await client.query('COMMIT');
 

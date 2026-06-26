@@ -348,29 +348,34 @@ async function processPayout(userId, data) {
   const myBank = await getMyBankAccount(userId);
   if (!myBank) throw new Error('No bank account found. Please add a bank account in profile.');
 
-  const aepsBalance = await getAepsBalance(userId);
-  if (aepsBalance < amount) throw new Error(`Insufficient AEPS balance. Available: ₹${aepsBalance}`);
-
-  // ✅ Get user role for charge calculation
+  // Get user role for charge calculation
   const userResult = await db.query('SELECT role FROM users WHERE id = $1', [userId]);
   const userRole = userResult.rows[0]?.role || 'retailer';
 
-  // ✅ Calculate payout charge based on amount slab and role
+  // Calculate payout charge based on amount slab and role
   const payoutCharge = await getPayoutCharge(amount, userRole);
-  const totalDeduction = amount + payoutCharge;
 
-  // ✅ Check if user has enough balance including charge
-  if (aepsBalance < totalDeduction) {
-    throw new Error(`Insufficient AEPS balance. Required: ₹${totalDeduction} (₹${amount} + ₹${payoutCharge} charge)`);
+  console.log(`[Payout] Amount: ₹${amount}, Charge: ₹${payoutCharge}`);
+
+  // ✅ Check AEPS wallet has enough for principal amount only
+  const aepsBalance = await getAepsBalance(userId);
+  if (aepsBalance < amount) {
+    throw new Error(`Insufficient AEPS balance. Required: ₹${amount}, Available: ₹${aepsBalance}`);
   }
 
-  console.log(`[Payout] Amount: ₹${amount}, Charge: ₹${payoutCharge}, Total Deduction: ₹${totalDeduction}`);
+  // ✅ Check main wallet has enough for commission
+  const walletService = require('../walletService');
+  const mainWalletBalance = await walletService.getBalance(userId);
+  if (payoutCharge > 0 && mainWalletBalance < payoutCharge) {
+    throw new Error(`Insufficient main wallet balance for commission. Required: ₹${payoutCharge}, Available: ₹${mainWalletBalance}`);
+  }
 
+  // Check daily/monthly limits (based on principal amount only)
   const { dailyUsed, dailyLimit, monthlyUsed, monthlyLimit } = await getPayoutLimits(userId);
-  if (dailyUsed + totalDeduction > dailyLimit) {
+  if (dailyUsed + amount > dailyLimit) {
     throw new Error(`Daily limit exceeded. Used: ₹${dailyUsed}, Limit: ₹${dailyLimit}`);
   }
-  if (monthlyUsed + totalDeduction > monthlyLimit) {
+  if (monthlyUsed + amount > monthlyLimit) {
     throw new Error(`Monthly limit exceeded. Used: ₹${monthlyUsed}, Limit: ₹${monthlyLimit}`);
   }
 
@@ -383,39 +388,57 @@ async function processPayout(userId, data) {
   try {
     await client.query('BEGIN');
 
-    // ✅ Deduct amount + charge from aeps_wallets
-    const updateWalletQuery = `
+    // ✅ Step 1: Deduct principal amount from AEPS wallet
+    const updateAepsWallet = `
       UPDATE aeps_wallets 
       SET balance = balance - $1, updated_at = NOW() 
       WHERE user_id = $2 AND balance >= $1
       RETURNING balance
     `;
-    const walletUpdate = await client.query(updateWalletQuery, [totalDeduction, userId]);
+    const aepsUpdate = await client.query(updateAepsWallet, [amount, userId]);
     
-    if (walletUpdate.rows.length === 0) {
-      throw new Error('Failed to deduct wallet (insufficient balance or concurrent update)');
+    if (aepsUpdate.rows.length === 0) {
+      throw new Error('Failed to deduct AEPS wallet (insufficient balance or concurrent update)');
     }
-    const newBalance = parseFloat(walletUpdate.rows[0].balance);
+    const newAepsBalance = parseFloat(aepsUpdate.rows[0].balance);
 
-    // ✅ Insert ledger entry for payout withdrawal
-    const ledgerQuery = `
-      INSERT INTO aeps_wallet_ledger (aeps_wallet_id, transaction_type, amount, balance_after, description, created_at)
-      SELECT id, 'payout_withdrawal', $1, $2, $3, NOW()
-      FROM aeps_wallets WHERE user_id = $4
-    `;
-    await client.query(ledgerQuery, [amount, newBalance, `Payout to own bank via ${mode}`, userId]);
-
-    // ✅ Insert ledger entry for payout charge
+    // ✅ Step 2: Deduct commission from main wallet
+    let newMainBalance = mainWalletBalance;
     if (payoutCharge > 0) {
-      await client.query(ledgerQuery, [
-        payoutCharge, 
-        newBalance, 
-        `Payout charge (${userRole}) for ₹${amount} transaction`, 
-        userId
-      ]);
+      const walletResult = await client.query(
+        'SELECT * FROM wallets WHERE user_id = $1 FOR UPDATE',
+        [userId]
+      );
+      if (walletResult.rows.length === 0) {
+        throw new Error('Main wallet not found');
+      }
+      
+      newMainBalance = parseFloat(walletResult.rows[0].balance) - payoutCharge;
+      
+      await client.query(
+        'UPDATE wallets SET balance = $1, updated_at = NOW() WHERE user_id = $2',
+        [newMainBalance, userId]
+      );
+
+      // Add ledger entry for main wallet commission deduction
+      await client.query(
+        `INSERT INTO wallet_ledger
+           (wallet_id, transaction_type, amount, balance_after, description, reference_id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [walletResult.rows[0].id, 'debit', payoutCharge, newMainBalance, 
+         `Payout commission charge for ₹${amount} transfer via ${mode}`, transactionRef]
+      );
     }
 
-    // Insert transaction record
+    // ✅ Step 3: Insert AEPS ledger entry for principal amount withdrawal
+    await client.query(
+      `INSERT INTO aeps_wallet_ledger (aeps_wallet_id, transaction_type, amount, balance_after, description, created_at)
+       SELECT id, 'payout_withdrawal', $1, $2, $3, NOW()
+       FROM aeps_wallets WHERE user_id = $4`,
+      [amount, newAepsBalance, `Payout to own bank via ${mode}`, userId]
+    );
+
+    // Insert transaction record with both deductions tracked
     const txnQuery = `
       INSERT INTO payout_transactions (
         user_id, wallet_source, transfer_mode, amount, merchant_ref_id,
@@ -424,6 +447,7 @@ async function processPayout(userId, data) {
       ) VALUES ($1, 'aeps', $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11, NOW(), NOW())
       RETURNING id
     `;
+    const totalDeduction = amount + payoutCharge; // For record keeping only
     const txnValues = [
       userId, mode, amount, merchantRefId,
       myBank.account_name, myBank.account_number, myBank.ifsc_code,
@@ -435,7 +459,7 @@ async function processPayout(userId, data) {
     const txnResult = await client.query(txnQuery, txnValues);
     const transactionId = txnResult.rows[0].id;
 
-    // Update daily limit usage
+    // Update daily limit usage (track principal amount only)
     const today = new Date().toISOString().slice(0, 10);
     const upsertLimitQuery = `
       INSERT INTO payout_daily_limits (user_id, date, payout_daily_used, created_at)
@@ -443,7 +467,7 @@ async function processPayout(userId, data) {
       ON CONFLICT (user_id, date) DO UPDATE
       SET payout_daily_used = payout_daily_limits.payout_daily_used + EXCLUDED.payout_daily_used
     `;
-    await client.query(upsertLimitQuery, [userId, today, totalDeduction]);
+    await client.query(upsertLimitQuery, [userId, today, amount]);
 
     // Call provider
     const provider = getPayoutProvider();
@@ -474,6 +498,7 @@ async function processPayout(userId, data) {
     const finalStatus = isSuccess ? 'success' : (isQueued ? 'pending' : 'failed');
 
     if (isSuccess) {
+      // Update transaction status
       await client.query(`
         UPDATE payout_transactions 
         SET status = 'success', provider_ref_id = $1, bank_ref_no = $2, raw_response = $3, updated_at = NOW()
@@ -482,18 +507,15 @@ async function processPayout(userId, data) {
 
       await client.query('COMMIT');
 
-      // ✅ Update final balance after all deductions
-      const finalBalance = await getAepsBalance(userId);
-      console.log(`💰 Final AEPS balance after payout: ${finalBalance}`);
-
       return {
         success: true,
         transactionId,
         merchantRefId: merchantRefId,
         amount: parseFloat(amount),
         payoutCharge: payoutCharge,
-        totalDeduction: totalDeduction,
-        newBalance: finalBalance,
+        totalDeduction: amount + payoutCharge,
+        newAepsBalance: parseFloat(newAepsBalance),
+        newMainBalance: parseFloat(newMainBalance),
         providerRefId: providerResponse.providerRefId,
         bankRefNo: providerResponse.bankRefNo,
         message: 'Payout successful'
@@ -511,47 +533,76 @@ async function processPayout(userId, data) {
       return {
         success: true,
         transactionId,
+        merchantRefId: merchantRefId,        // ← ADD THIS LINE
         amount: parseFloat(amount),
         payoutCharge: payoutCharge,
-        totalDeduction: totalDeduction,
+        totalDeduction: amount + payoutCharge,
         providerRefId: providerResponse.providerRefId,
         message: 'Transfer submitted. Final status will be updated shortly.'
       };
 
     } else {
-      // Provider failure: refund amount + charge
+      // ✅ Provider failure: Refund principal to AEPS and commission to main wallet
+      
+      // Refund AEPS wallet
       await client.query(`
         UPDATE aeps_wallets 
         SET balance = balance + $1, updated_at = NOW()
         WHERE user_id = $2
-      `, [totalDeduction, userId]);
+      `, [amount, userId]);
 
       await client.query(`
         INSERT INTO aeps_wallet_ledger (aeps_wallet_id, transaction_type, amount, balance_after, description, created_at)
         SELECT id, 'payout_refund', $1, (balance + $1), $2, NOW()
         FROM aeps_wallets WHERE user_id = $3
-      `, [totalDeduction, `Refund for failed payout (₹${amount} + ₹${payoutCharge} charge)`, userId]);
+      `, [amount, `Refund for failed payout (₹${amount})`, userId]);
 
+      // Refund main wallet commission
+      if (payoutCharge > 0) {
+        const mainWallet = await client.query(
+          'SELECT * FROM wallets WHERE user_id = $1 FOR UPDATE',
+          [userId]
+        );
+        
+        const refundedMainBalance = parseFloat(mainWallet.rows[0].balance) + payoutCharge;
+        
+        await client.query(
+          'UPDATE wallets SET balance = $1, updated_at = NOW() WHERE user_id = $2',
+          [refundedMainBalance, userId]
+        );
+
+        await client.query(
+          `INSERT INTO wallet_ledger
+             (wallet_id, transaction_type, amount, balance_after, description, reference_id)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [mainWallet.rows[0].id, 'credit', payoutCharge, refundedMainBalance,
+           `Refund for failed payout commission (₹${payoutCharge})`, transactionRef]
+        );
+      }
+
+      // Update transaction status
       await client.query(`
         UPDATE payout_transactions 
         SET status = 'failed', failure_reason = $1, raw_response = $2, updated_at = NOW()
         WHERE id = $3
       `, [providerResponse.message, JSON.stringify(providerResponse), transactionId]);
 
+      // Rollback daily limit
       await client.query(`
         UPDATE payout_daily_limits 
         SET payout_daily_used = payout_daily_used - $1
         WHERE user_id = $2 AND date = $3
-      `, [totalDeduction, userId, today]);
+      `, [amount, userId, today]);
 
       await client.query('COMMIT');
 
       return {
         success: false,
         transactionId,
+        merchantRefId: merchantRefId,        // ← ADD THIS LINE
         amount: parseFloat(amount),
         payoutCharge: payoutCharge,
-        totalDeduction: totalDeduction,
+        totalDeduction: amount + payoutCharge,
         message: `Payout failed: ${providerResponse.message}`
       };
     }

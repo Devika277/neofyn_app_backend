@@ -485,17 +485,35 @@ class BBPSBillPay {
 
         console.log('[BBPS] fetchBill plaintext payload:', JSON.stringify(payload, null, 2));
         const result = await post(cfg.paths.fetchBill, payload);
-        console.log('[BBPS] fetchBill result meta:', JSON.stringify(result.meta, null, 2));
-        console.log('[BBPS] fetchBill result data:', JSON.stringify(result.data, null, 2));
+         console.log('[BBPS] fetchBill result data:', JSON.stringify(result.data, null, 2));
 
-        if (result.meta.responseCode !== '000') {
-            throw new Error(`Fetch bill failed: ${result.meta.message}`);
-        }
         const billerResponse = result.data?.billerResponse || result.data || {};
-        if (!billerResponse.fetchRefId) throw new Error('Fetch Bill response missing fetchRefId');
+
+        // ✅ Check for VimoPay‑reported failure BEFORE any other logic
+        if (
+            result.meta.responseCode !== '000' ||
+            (billerResponse.txnStatus && billerResponse.txnStatus.toUpperCase() === 'FAILED')
+        ) {
+            // Return a special object so the service layer can handle it
+            return {
+                error: billerResponse.responseMessage || result.meta.message || 'Fetch bill failed',
+                billerResponse: billerResponse,   // optional, for debugging
+            };
+        }
+
+        if (!billerResponse.fetchRefId) {
+            throw new Error('Fetch Bill response missing fetchRefId');
+        }
+
         debugLog(`Bill fetched | fetchRefId=${billerResponse.fetchRefId} amount=${billerResponse.amount}`);
         return billerResponse;
     }
+    
+
+//     if (!billerResponse.fetchRefId) throw new Error('Fetch Bill response missing fetchRefId');
+//     debugLog(`Bill fetched | fetchRefId=${billerResponse.fetchRefId} amount=${billerResponse.amount}`);
+//     return billerResponse;
+// }
 
     // ------------------------------------------------------------------
     // Pay bill (step 2)
@@ -536,13 +554,23 @@ class BBPSBillPay {
         };
         console.log('[BBPS] payNow plaintext payload:', JSON.stringify(payload, null, 2));
         const result = await post(cfg.paths.billPayment, payload);
-        const status = result.meta.responseCode === '000' ? 'success' : 'failed';
+        let finalStatus = 'failed';
+        if (result.meta.responseCode === '000') {
+            const innerStatus = (result.data?.txnStatus || '').toUpperCase();
+            if (innerStatus === 'SUCCESS' || innerStatus === '') {
+                finalStatus = 'success';
+            } else if (innerStatus === 'PENDING') {
+                finalStatus = 'pending';   // or treat as 'failed' if you prefer
+            }
+        }
+
         const providerTxnId = result.data?.txnId || result.data?.transactionId || null;
-        debugLog(`Payment ${status} | providerTxnId=${providerTxnId}`);
+        debugLog(`Payment ${finalStatus} | providerTxnId=${providerTxnId}`);
+
         return {
-            status,
+            status: finalStatus,           // 👈 use finalStatus here
             provider_txn_id: providerTxnId,
-            message: result.meta.message || `Bill payment ${status}`,
+            message: result.meta.message || `Bill payment ${finalStatus}`,
             raw_response: result,
         };
     }
