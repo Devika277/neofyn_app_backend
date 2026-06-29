@@ -306,7 +306,6 @@ class RechargeController {
                 logger.info(`[CALLBACK] Refunded ₹${refundAmount} for txn id: ${row.id}`);
             }
 
-            // Commission engine can be called here if needed
 
         } catch (error) {
             logger.error('[CALLBACK] Unhandled error:', error.message);

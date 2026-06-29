@@ -323,9 +323,23 @@ async function adminGetPayoutTransactions(req, res, next) {
 async function payoutWebhook(req, res, next) {
   try {
     const body = req.body;
+    console.log('📨 Webhook received:', JSON.stringify(body, null, 2));
+
+    // ✅ Use correct field names
+    const { 
+      txnStatusCode, 
+      txnId, 
+      merchantRefId, 
+      rrn, 
+      responseMessage,
+      beneficiaryName,
+      beneficiaryAccountNumber,
+      beneficiaryIFSC,
+      charges
+    } = body;
 
     // VimoPay posts plain JSON to callback (not encrypted)
-    const { txnStatusCode, txnId, merchantRefId, rrn, responseMessage } = body;
+    // const { txnStatusCode, txnId, merchantRefId, rrn, responseMessage } = body;
 
     if (!merchantRefId && !txnId) {
       return res.status(200).json({ successStatus: true, message: 'Success', responseCode: '000' });

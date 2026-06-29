@@ -493,17 +493,64 @@ async function processPayout(userId, data) {
     }
 
     const responseTimeMs = Date.now() - startTime;
-    const isSuccess = providerResponse.status === '000';
-    const isQueued = providerResponse.status === '004';
+
+    // ✅ FIX: Check correct response fields from VimoPay
+    // VimoPay returns txnStatusCode, not status
+    const statusCode = providerResponse.txnStatusCode || providerResponse.status;
+    const isSuccess = statusCode === '000';
+    const isQueued = statusCode === '004';
     const finalStatus = isSuccess ? 'success' : (isQueued ? 'pending' : 'failed');
 
+    // ✅ FIX: Extract providerRefId from correct field
+    const providerRefId = providerResponse.txnId || providerResponse.providerRefId;
+    const bankRefNo = providerResponse.rrn || providerResponse.bankRefNo;
+    const responseMessage = providerResponse.responseMessage || providerResponse.message;
+
+    // ✅ Insert provider log
+    try {
+      await db.query(`
+        INSERT INTO provider_logs
+        (merchant_ref_id, transaction_id, transaction_type, request_payload, response_payload, http_status, response_time_ms, final_status, error_message)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `, [
+        merchantRefId,
+        transactionId,
+        'payout',
+        JSON.stringify({ amount, mode, beneficiary: myBank.account_number, ifsc: myBank.ifsc_code }),
+        JSON.stringify(providerResponse),
+        200,
+        responseTimeMs,
+        finalStatus,
+        finalStatus === 'failed' ? responseMessage : null
+      ]);
+    } catch (logErr) {
+      console.error('Failed to insert provider_log:', logErr.message);
+    }
+
     if (isSuccess) {
-      // Update transaction status
+      // ✅ Update transaction with full response including beneficiary details
       await client.query(`
         UPDATE payout_transactions 
-        SET status = 'success', provider_ref_id = $1, bank_ref_no = $2, raw_response = $3, updated_at = NOW()
-        WHERE id = $4
-      `, [providerResponse.providerRefId, providerResponse.bankRefNo, JSON.stringify(providerResponse), transactionId]);
+        SET status = 'success', 
+            provider_ref_id = $1, 
+            bank_ref_no = $2, 
+            raw_response = $3,
+            bene_account_name = COALESCE(bene_account_name, $4),
+            bene_account_number = COALESCE(bene_account_number, $5),
+            bene_ifsc = COALESCE(bene_ifsc, $6),
+            total_deduction = COALESCE($7, total_deduction),
+            updated_at = NOW()
+        WHERE id = $8
+      `, [
+        providerRefId, 
+        bankRefNo, 
+        JSON.stringify(providerResponse),
+        providerResponse.beneficiaryName || myBank.account_name,
+        providerResponse.beneficiaryAccountNumber || myBank.account_number,
+        providerResponse.beneficiaryIFSC || myBank.ifsc_code,
+        parseFloat(providerResponse.charges) || totalDeduction,
+        transactionId
+      ]);
 
       await client.query('COMMIT');
 
@@ -516,29 +563,33 @@ async function processPayout(userId, data) {
         totalDeduction: amount + payoutCharge,
         newAepsBalance: parseFloat(newAepsBalance),
         newMainBalance: parseFloat(newMainBalance),
-        providerRefId: providerResponse.providerRefId,
-        bankRefNo: providerResponse.bankRefNo,
-        message: 'Payout successful'
+        providerRefId: providerRefId,
+        bankRefNo: bankRefNo,
+        message: responseMessage || 'Payout successful'
       };
 
     } else if (isQueued) {
+      // ✅ Handle queued status - store providerRefId for webhook matching
       await client.query(`
         UPDATE payout_transactions
-        SET status = 'pending', provider_ref_id = $1, raw_response = $2, updated_at = NOW()
+        SET status = 'pending', 
+            provider_ref_id = $1, 
+            raw_response = $2,
+            updated_at = NOW()
         WHERE id = $3
-      `, [providerResponse.providerRefId, JSON.stringify(providerResponse), transactionId]);
+      `, [providerRefId, JSON.stringify(providerResponse), transactionId]);
 
       await client.query('COMMIT');
 
       return {
         success: true,
         transactionId,
-        merchantRefId: merchantRefId,        // ← ADD THIS LINE
+        merchantRefId: merchantRefId,        // ✅ Keep merchantRefId for webhook matching
         amount: parseFloat(amount),
         payoutCharge: payoutCharge,
         totalDeduction: amount + payoutCharge,
-        providerRefId: providerResponse.providerRefId,
-        message: 'Transfer submitted. Final status will be updated shortly.'
+        providerRefId: providerRefId,
+        message: responseMessage || 'Transfer submitted. Final status will be updated shortly.'
       };
 
     } else {
@@ -583,9 +634,12 @@ async function processPayout(userId, data) {
       // Update transaction status
       await client.query(`
         UPDATE payout_transactions 
-        SET status = 'failed', failure_reason = $1, raw_response = $2, updated_at = NOW()
+        SET status = 'failed', 
+            failure_reason = $1, 
+            raw_response = $2, 
+            updated_at = NOW()
         WHERE id = $3
-      `, [providerResponse.message, JSON.stringify(providerResponse), transactionId]);
+      `, [responseMessage || providerResponse.message, JSON.stringify(providerResponse), transactionId]);
 
       // Rollback daily limit
       await client.query(`
@@ -599,11 +653,11 @@ async function processPayout(userId, data) {
       return {
         success: false,
         transactionId,
-        merchantRefId: merchantRefId,        // ← ADD THIS LINE
+        merchantRefId: merchantRefId,        // ✅ Keep merchantRefId for reference
         amount: parseFloat(amount),
         payoutCharge: payoutCharge,
         totalDeduction: amount + payoutCharge,
-        message: `Payout failed: ${providerResponse.message}`
+        message: `Payout failed: ${responseMessage || providerResponse.message}`
       };
     }
   } catch (err) {

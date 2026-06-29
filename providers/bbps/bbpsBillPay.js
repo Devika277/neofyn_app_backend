@@ -290,30 +290,57 @@ class BBPSBillPay {
     // Get biller categories
     // ------------------------------------------------------------------
     async getBillerCategories() {
-        console.log('[BBPS] getBillerCategories() called');
-        const cfg = getConfig();
+    console.log('[BBPS] getBillerCategories() called');
+    const cfg = getConfig();
+    
+    try {
         const token = await getToken();
         const url = `${cfg.baseUrl}${cfg.paths.billerCats}`;
+        
+        console.log('[BBPS] Fetching categories from:', url);
+        
         const response = await axios.get(url, {
-            headers: { Authorization: `Bearer ${token}`, userId: cfg.userId }
+            headers: { Authorization: `Bearer ${token}`, userId: cfg.userId },
+            timeout: 15000,
         });
         
         let raw = response.data;
+        console.log('[BBPS] Categories raw response type:', typeof raw);
+        console.log('[BBPS] Categories raw keys:', Object.keys(raw));
+        
         if (raw && raw.data && typeof raw.data === 'string') {
             console.log('[BBPS] Encrypted data field detected, decrypting...');
             const decrypted = decryptPayload(raw.data, cfg.secretKey, cfg.saltKey);
-            if (!decrypted) throw new Error('Failed to decrypt categories');
+            if (!decrypted) {
+                console.error('[BBPS] Failed to decrypt categories');
+                return [];
+            }
             console.log('[BBPS] Decrypted categories:', decrypted.substring(0, 200));
             raw = JSON.parse(decrypted);
         }
         
         const categories = raw.data || raw;
+        console.log('[BBPS] Categories type:', typeof categories);
+        console.log('[BBPS] Is array:', Array.isArray(categories));
+        
         if (!Array.isArray(categories)) {
             console.error('[BBPS] Unexpected categories format:', categories);
             return [];
         }
+        
+        console.log(`[BBPS] Returning ${categories.length} categories`);
         return categories;
+        
+    } catch (err) {
+        console.error('[BBPS] getBillerCategories error:', err.message);
+        console.error('[BBPS] Error details:', {
+            status: err.response?.status,
+            statusText: err.response?.statusText,
+            data: err.response?.data,
+        });
+        return [];  // Return empty array instead of throwing
     }
+}
 
     // ------------------------------------------------------------------
     // Get billers (providers) for a given categoryCode

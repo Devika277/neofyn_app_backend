@@ -1,6 +1,6 @@
 // controllers/commissionController.js
 const pool = require('../config/db');
-const commissionEngine = require('../services/commissionEngine');
+const commissionEngine = require('../services/Commission/commissionEngine');
 
 // ─── USER ENDPOINTS ───────────────────────────────────────────────────
 
@@ -35,8 +35,12 @@ const getHistory = async (req, res) => {
 };
 
 // POST /api/commission/transfer
+// controllers/commissionController.js
+
 const transferToMain = async (req, res) => {
     const { amount } = req.body;
+    console.log('💰 Transfer request:', { userId: req.user.id, amount });
+    
     if (!amount || amount <= 0) {
         return res.status(400).json({ success: false, message: 'Invalid amount' });
     }
@@ -52,26 +56,105 @@ const transferToMain = async (req, res) => {
     try {
         await client.query('BEGIN');
 
-        // Lock the user row
+        // 1. Check user's commission balance
         const userRes = await client.query(
             `SELECT commission_wallet, commission_frozen FROM users WHERE id = $1 FOR UPDATE`,
             [req.user.id]
         );
         const user = userRes.rows[0];
+        
+        console.log('📊 User commission before transfer:', user);
+        
         if (!user) throw new Error('User not found');
         if (user.commission_frozen) throw new Error('Commission wallet is frozen. Contact admin.');
-        if (user.commission_wallet < amount) throw new Error('Insufficient commission balance');
+        if (parseFloat(user.commission_wallet) < amount) throw new Error('Insufficient commission balance');
 
-        // Transfer: commission_wallet → mainwallet
+        // 2. Check if wallet exists for this user
+        const walletCheck = await client.query(
+            `SELECT id, balance FROM wallets WHERE user_id = $1 FOR UPDATE`,
+            [req.user.id]
+        );
+        
+        let walletId;
+        let currentBalance = 0;
+        
+        if (walletCheck.rows.length === 0) {
+            // Create wallet if it doesn't exist
+            const newWallet = await client.query(
+                `INSERT INTO wallets (user_id, balance, status, created_at, updated_at) 
+                 VALUES ($1, $2, 'active', NOW(), NOW()) 
+                 RETURNING id, balance`,
+                [req.user.id, 0]
+            );
+            walletId = newWallet.rows[0].id;
+            currentBalance = 0;
+            console.log('📊 New wallet created for user:', req.user.id);
+        } else {
+            walletId = walletCheck.rows[0].id;
+            currentBalance = parseFloat(walletCheck.rows[0].balance);
+            console.log('📊 Existing wallet balance:', currentBalance);
+        }
+
+        // 3. Update commission wallet (users table) - DECREASE
         await client.query(
-            `UPDATE users SET commission_wallet = commission_wallet - $1, mainwallet = mainwallet + $1 WHERE id = $2`,
+            `UPDATE users 
+             SET commission_wallet = commission_wallet - $1 
+             WHERE id = $2`,
             [amount, req.user.id]
         );
 
+        // 4. Update main wallet (wallets table) - INCREASE
+        await client.query(
+            `UPDATE wallets 
+             SET balance = balance + $1, 
+                 updated_at = NOW() 
+             WHERE user_id = $2`,
+            [amount, req.user.id]
+        );
+
+        // 5. Log the transfer in commission_ledger
+        await client.query(
+            `INSERT INTO commission_ledger (
+                user_id, 
+                transaction_ref, 
+                service_type, 
+                txn_amount, 
+                commission_amount, 
+                role_at_time, 
+                status, 
+                created_at
+            ) VALUES ($1, $2, 'transfer_to_main', $3, $4, $5, 'credited', NOW())`,
+            [req.user.id, `TRANSFER_${Date.now()}`, amount, amount, req.user.role || 'user']
+        );
+
         await client.query('COMMIT');
-        res.json({ success: true, message: 'Transfer successful' });
+        
+        // 6. Get updated balances
+        const updatedUser = await client.query(
+            `SELECT commission_wallet FROM users WHERE id = $1`,
+            [req.user.id]
+        );
+        const updatedWallet = await client.query(
+            `SELECT balance FROM wallets WHERE user_id = $1`,
+            [req.user.id]
+        );
+        
+        console.log('📊 Transfer completed:', {
+            commission_wallet: updatedUser.rows[0].commission_wallet,
+            main_wallet: updatedWallet.rows[0]?.balance || 0
+        });
+        
+        res.json({ 
+            success: true, 
+            message: 'Transfer successful',
+            data: {
+                commission_wallet: parseFloat(updatedUser.rows[0].commission_wallet),
+                main_wallet: parseFloat(updatedWallet.rows[0]?.balance || 0)
+            }
+        });
     } catch (err) {
         await client.query('ROLLBACK');
+        console.error('❌ Transfer error:', err);
         res.status(400).json({ success: false, message: err.message });
     } finally {
         client.release();

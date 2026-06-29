@@ -3,14 +3,97 @@ const db = require('../../config/db');
 const logger = require('../../utils/logger');
 const walletService = require('../walletService');
 const providerRouter = require('../providerRouter');
-const { processCommission } = require('../Commission/commissionService'); // ✅ only commission service
+const { processCommission } = require('../Commission/commissionService');
 
 class PaymentService {
+  
+  // ─── NORMALIZE BILL TYPE ──────────────────────────────────────────────
   /**
-   * processPayment – two‑step bill payment:
-   *   - step: 'fetch'  → retrieve bill details, store transaction (amount 0)
-   *   - step: 'pay'    → deduct wallet, call provider, finalise
+   * Normalize bill type to a consistent value
+   * @param {string} serviceType - Raw service type from request
+   * @returns {string} Normalized service type
    */
+  _normalizeBillType(serviceType) {
+    if (!serviceType) return 'others';
+    
+    const type = serviceType.toLowerCase().trim();
+    
+    // Electricity
+    if (['electricity', 'electric', 'eb', 'tneb', 'kesco', 'bescom', 
+         'tata power', 'adani electricity', 'ksebl0000ker01'].includes(type)) {
+      return 'electricity';
+    }
+    
+    // Fastag - All variations
+    if (['fastag', 'Fastag', 'FASTAG', 'thef00000natzo', 'idfc00000natxm',
+         'federal bank', 'idfc', 'idfc bank', 'federal', 'federal bank - fastag',
+         'idfc first bank fastag', 'federal bank - fastag', 'thef00000natzo'].includes(type) ||
+        type.includes('fastag')) {
+      return 'fastag';
+    }
+    
+    // Water
+    if (['water', 'water supply'].includes(type)) {
+      return 'water';
+    }
+    
+    // LPG Gas
+    if (['lpg', 'lpg_gas', 'indane', 'bharat gas', 'hp gas'].includes(type)) {
+      return 'lpg_gas';
+    }
+    
+    // Piped Gas
+    if (['piped gas', 'piped_gas'].includes(type)) {
+      return 'piped_gas';
+    }
+    
+    // Postpaid
+    if (['postpaid', 'mobile postpaid', 'airtel postpaid', 'jio postpaid', 'vi postpaid'].includes(type)) {
+      return 'postpaid';
+    }
+    
+    // Broadband
+    if (['broadband', 'internet', 'wifi'].includes(type)) {
+      return 'broadband';
+    }
+    
+    // Landline
+    if (['landline', 'phone'].includes(type)) {
+      return 'landline';
+    }
+    
+    // Credit Card
+    if (['credit_card', 'credit card', 'cc'].includes(type)) {
+      return 'credit_card';
+    }
+    
+    // Loan Repayment
+    if (['loan', 'loan_repayment', 'emi'].includes(type)) {
+      return 'loan_repayment';
+    }
+    
+    // Education Fees
+    if (['education', 'education_fees', 'school fees', 'college fees'].includes(type)) {
+      return 'education_fees';
+    }
+    
+    // Municipal Taxes
+    if (['municipal', 'municipal_taxes', 'property tax'].includes(type)) {
+      return 'municipal_taxes';
+    }
+    
+    // Others
+    if (['rental', 'rent', 'subscription', 'cable_tv', 'cable', 'donation',
+         'ncmc', 'ncmc_recharge', 'metro', 'recurring_deposit', 'rd',
+         'housing_society', 'society', 'hospitals', 'hospital', 'medical',
+         'municipal_services', 'clubs_associations', 'club'].includes(type)) {
+      return type;
+    }
+    
+    return 'others';
+  }
+
+  // ─── PROCESS PAYMENT ──────────────────────────────────────────────────
   async processPayment(userId, paymentData, idempotencyKey = null) {
     const { serviceType, customerId, additionalData = {}, step } = paymentData;
     const client = await db.connect();
@@ -23,20 +106,24 @@ class PaymentService {
         throw new Error('Missing required fields: serviceType, customerId');
       }
 
+      // Normalize service type
+      const normalizedServiceType = this._normalizeBillType(serviceType);
+      logger.info(`Normalized bill type: ${serviceType} → ${normalizedServiceType}`);
+
       // Skip service validation for BBPS fetch/pay steps
       if (step !== 'fetch' && step !== 'pay') {
         const serviceCheck = await client.query(
           'SELECT id FROM services WHERE name = $1 AND is_active = true',
-          [serviceType]
+          [normalizedServiceType]
         );
         if (serviceCheck.rows.length === 0) {
-          throw new Error(`Service ${serviceType} not found or inactive`);
+          throw new Error(`Service ${normalizedServiceType} not found or inactive`);
         }
       }
 
       if (step === 'fetch') {
         return await this._fetchBill(
-          client, userId, serviceType, customerId, additionalData, idempotencyKey, transactionRef
+          client, userId, normalizedServiceType, customerId, additionalData, idempotencyKey, transactionRef
         );
       }
 
@@ -49,7 +136,6 @@ class PaymentService {
       throw new Error('Invalid or missing "step". Use "fetch" or "pay".');
     } catch (error) {
       await client.query('ROLLBACK');
-      // ❌ No commissionEngine.reverse() – removed as requested
       logger.error(`PaymentService: Error processing payment`, {
         error: error.message,
         stack: error.stack,
@@ -60,7 +146,7 @@ class PaymentService {
     }
   }
 
-  // ─── FETCH BILL (no wallet deduction) ────────────────────────────────
+  // ─── FETCH BILL ──────────────────────────────────────────────────────
   async _fetchBill(client, userId, serviceType, customerId, additionalData, idempotencyKey, transactionRef) {
     // Idempotency check
     if (idempotencyKey) {
@@ -90,11 +176,9 @@ class PaymentService {
       additionalData,
     });
 
-
-          // If the provider returned an error, throw it immediately (rollback transaction)
-      if (fetchResult && fetchResult.error) {
-          throw new Error(fetchResult.error);
-      }
+    if (fetchResult && fetchResult.error) {
+      throw new Error(fetchResult.error);
+    }
 
     const insertResult = await client.query(
       `INSERT INTO transactions 
@@ -103,7 +187,7 @@ class PaymentService {
        RETURNING id`,
       [
         userId,
-        serviceType,
+        serviceType, // Already normalized
         customerId,
         0,
         'pending',
@@ -112,7 +196,6 @@ class PaymentService {
       ]
     );
     const transactionId = insertResult.rows[0].id;
-    
 
     if (fetchResult.fetchRefId) {
       await client.query(
@@ -128,8 +211,14 @@ class PaymentService {
       );
     }
 
+    // Also update operator field for easier identification
+    await client.query(
+      `UPDATE transactions SET operator = $1 WHERE id = $2`,
+      [serviceType, transactionId]
+    );
+
     await client.query('COMMIT');
-    logger.info(`Fetch bill completed, transaction ${transactionId} created`);
+    logger.info(`Fetch bill completed, transaction ${transactionId} created with type: ${serviceType}`);
 
     // Log fetch call
     const startTime = Date.now();
@@ -160,7 +249,7 @@ class PaymentService {
     };
   }
 
-  // ─── Helper: get BBPS merchant code from onboarding table ────────────
+  // ─── HELPER: GET BBPS MERCHANT CODE ──────────────────────────────────
   async _getMerchantCode(client, userId) {
     const result = await client.query(
       `SELECT bbps_merchant_code FROM merchant_onboarding WHERE user_id = $1 AND status = 'active'`,
@@ -172,7 +261,7 @@ class PaymentService {
     return result.rows[0].bbps_merchant_code;
   }
 
-  // ─── PAY BILL (wallet deduction + provider) ───────────────────────────
+  // ─── PAY BILL ──────────────────────────────────────────────────────────
   async _payBill(client, userId, paymentData, idempotencyKey, transactionRef) {
     const { serviceType, customerId, additionalData = {}, transactionId } = paymentData;
 
@@ -182,21 +271,20 @@ class PaymentService {
 
     // Retrieve fetch transaction
     const fetchTx = await client.query(
-    `SELECT id, plan_amount, provider_txn_id, status, type
-     FROM transactions 
-     WHERE id = $1 AND user_id = $2`,
-    [transactionId, userId]
-);
-if (fetchTx.rows.length === 0) {
-    throw new Error('No fetch transaction found. Please complete the fetch step first.');
-}
+      `SELECT id, plan_amount, provider_txn_id, status, type, operator
+       FROM transactions 
+       WHERE id = $1 AND user_id = $2`,
+      [transactionId, userId]
+    );
+    if (fetchTx.rows.length === 0) {
+      throw new Error('No fetch transaction found. Please complete the fetch step first.');
+    }
     const tx = fetchTx.rows[0];
     if (tx.status !== 'pending') {
       throw new Error('This transaction is no longer pending.');
     }
 
     const serviceTypeFromDb = tx.type;
-
     const fetchRefId = tx.provider_txn_id;
     if (!fetchRefId) {
       throw new Error('Fetch Bill must be completed first. fetchRefId not found.');
@@ -208,13 +296,11 @@ if (fetchTx.rows.length === 0) {
     );
     const fetchBillResult = apiResult.rows[0]?.api_response?.fetchBillResult || {};
 
-    // Validate required fields BEFORE deducting wallet
     const billerId = fetchBillResult.billerId || fetchBillResult.billerCode;
     if (!billerId) {
       throw new Error('Biller ID (or Biller Code) is missing from fetch result');
     }
 
-    // Use user‑entered amount if provided, otherwise fallback to stored plan_amount
     let amount = parseFloat(paymentData.amount);
     if (isNaN(amount) || amount <= 0) {
       amount = parseFloat(tx.plan_amount);
@@ -223,7 +309,6 @@ if (fetchTx.rows.length === 0) {
       throw new Error('Invalid bill amount');
     }
 
-    // Get merchant code
     const merchantCode = await this._getMerchantCode(client, userId);
     logger.info(`Using BBPS merchant code: ${merchantCode} for user ${userId}`);
 
@@ -233,13 +318,11 @@ if (fetchTx.rows.length === 0) {
       fetchRefId,
     };
 
-    // Check wallet balance
     const balance = await walletService.getBalance(userId);
     if (balance < amount) {
       throw new Error(`Insufficient balance. Available: ₹${balance}, Required: ₹${amount}`);
     }
 
-    // Deduct wallet (all validations passed)
     const deductResult = await walletService.deductMoney(
       userId, amount, `${serviceType} payment for ${customerId}`, transactionId
     );
@@ -251,11 +334,10 @@ if (fetchTx.rows.length === 0) {
 
     const payStartTime = Date.now();
 
-    // Call provider pay step
     const providerResponse = await providerRouter.routeBillPayment(
       {
         step: 'pay',
-        serviceType,
+        serviceType: serviceTypeFromDb,
         customerId,
         amount,
         transaction_id: transactionId,
@@ -269,52 +351,52 @@ if (fetchTx.rows.length === 0) {
     const status = providerResponse.status === 'success' ? 'success' :
                    providerResponse.status === 'pending' ? 'pending' : 'failed';
 
-    // Update transaction with final status
+    // Update transaction with final status and ensure operator is set
     await client.query(
       `UPDATE transactions 
-       SET status = $1, provider_txn_id = $2, api_response = $3, updated_at = NOW() 
-       WHERE id = $4`,
+       SET status = $1, 
+           provider_txn_id = $2, 
+           api_response = $3, 
+           operator = $4,
+           updated_at = NOW() 
+       WHERE id = $5`,
       [
         status,
-        providerResponse.provider_txn_id,
+        providerResponse.provider_txn_id || null,
         JSON.stringify({ fetchStep: fetchBillResult, payStep: providerResponse.raw_response }),
+        serviceTypeFromDb, // Ensure operator is set
         transactionId,
       ]
     );
 
-    // Handle failure – refund (no commission reversal needed)
     let refundProcessed = false;
     if (status === 'failed' || status === 'pending') {
-    const reason = status === 'pending'
+      const reason = status === 'pending'
         ? `Refund for pending bill payment ${transactionId}`
         : `Refund for failed bill payment ${transactionId}`;
 
-    const refundResult = await walletService.addMoney(
+      const refundResult = await walletService.addMoney(
         userId, amount, reason, null
-    );
-    logger.info(`Refund processed (${status}). New balance: ${refundResult.newBalance}`);
-    refundProcessed = true;
+      );
+      logger.info(`Refund processed (${status}). New balance: ${refundResult.newBalance}`);
+      refundProcessed = true;
 
-    // Also update the transaction status to 'failed' so it's not left as pending
-    await client.query(
+      await client.query(
         `UPDATE transactions SET status = 'failed', updated_at = NOW() WHERE id = $1`,
         [transactionId]
-    );
-}
+      );
+    }
 
     await client.query('COMMIT');
 
-    // ============================================================
-    // ✅ COMMISSION CREDIT (only on success)
-    // ============================================================
+    // ✅ Commission Credit (only on success)
     if (status === 'success') {
       await processCommission(
-        'billpay',          // serviceType
-        amount,             // transaction amount
-        userId,             // retailer who paid the bill
-        { serviceType: serviceType }   // original bill type (e.g., 'electricity', 'postpaid')
+        'billpay',
+        amount,
+        userId,
+        { serviceType: serviceTypeFromDb }
       ).catch(err => {
-        // Commission failure never breaks the payment response
         logger.error(`Commission failed for payment tx ${transactionId}:`, err.message);
       });
     }
@@ -353,22 +435,9 @@ if (fetchTx.rows.length === 0) {
     };
   }
 
-  // ─── USER HISTORY (with date filters) ─────────────────────────────────
-async getUserHistory(userId, serviceType = null, startDate = null, endDate = null, limit = 50, offset = 0) {
+  // ─── USER HISTORY ──────────────────────────────────────────────────────
+  async getUserHistory(userId, serviceType = null, startDate = null, endDate = null, limit = 50, offset = 0) {
     try {
-      console.log('🔍 getUserHistory - userId:', userId);
-
-      // Check what types exist
-      const typesQuery = `
-        SELECT DISTINCT type, COUNT(*) 
-        FROM transactions 
-        WHERE user_id = $1 
-        GROUP BY type
-      `;
-      const types = await db.query(typesQuery, [userId]);
-      // console.log('📊 Transaction types in DB:', types.rows);
-
-      // Main query with case-insensitive filter
       let query = `
         SELECT id, type as service_type, consumer_number, plan_amount as amount, 
                status, provider_txn_id, provider_name, created_at
@@ -398,19 +467,14 @@ async getUserHistory(userId, serviceType = null, startDate = null, endDate = nul
       query += ` ORDER BY created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
       params.push(limit, offset);
 
-      // console.log('📝 SQL:', query);
-      // console.log('📝 Params:', params);
-
       const result = await db.query(query, params);
-      console.log(`✅ Found ${result.rows.length} non-recharge transactions`);
-      
       return result.rows;
     } catch (error) {
-      console.error('❌ Error:', error.message);
       logger.error(`Error fetching user history`, { error: error.message });
       throw error;
     }
   }
+
   // ─── GET SINGLE TRANSACTION ──────────────────────────────────────────
   async getTransactionById(userId, transactionId) {
     try {

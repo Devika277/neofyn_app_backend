@@ -7,6 +7,8 @@ const masterRoutes = require('./routes/master');
 const merchantRoutes = require('./routes/merchant');
 const aepsRoutes = require('./routes/aepsRoutes');  // Add AEPS routes
 const payoutRoutes = require('./routes/payoutRoutes'); // ADD THIS LINE
+// Import the commission routes
+const commissionRoutes = require('./routes/commissionRoutes');
 
 const app = express();
 
@@ -67,9 +69,12 @@ app.use('/api/dmt', dmtRoutes);
 app.use('/api/master', masterRoutes);
 app.use('/api/merchant', merchantRoutes);
 
+app.use('/api/states', require('./routes/bbpsStates.js'));
+
 app.use('/api/recharge', require('./routes/rechargeRoutes'));
 app.use('/api/bbps', require('./routes/bbpsRoutes'));
 app.use('/api/payments', require('./routes/paymentRoutes'));
+app.use('/api/commission', commissionRoutes);
 
 
 // NEW: AEPS Routes

@@ -5,7 +5,6 @@ const dmtProviderRouter = require('../../providers/dmtProviderRouter');
 const commissionService = require('../../services/Commission/commissionService');
 const payoutProvider = require('../../providers/vimopayProvider');
 
-
 const DMT_PROVIDER_ID = 8;
 
 const debug = {
@@ -82,65 +81,51 @@ async function processDmtTransfer(userId, { remitterId, beneficiaryId, amount, t
     const remitter = remitters[0];
     const productType = remitter.monthly_limit == 25000 ? 'lite' : 'smart';
 
-   // 3. Fetch beneficiary
-const { rows: beneficiaries } = await client.query(
-  `SELECT * FROM dmt_beneficiaries WHERE id = $1 AND remitter_id = $2 AND is_active = true`,
-  [beneficiaryId, remitterId]
-);
-if (beneficiaries.length === 0) throw new Error('Beneficiary not found');
-const beneficiary = beneficiaries[0];
-
-// ----- VALIDATE STATE CODE (before hitting the provider) -----
-// Validate state code
-// ----- VALIDATE STATE CODE (must match provider's list) -----
-// ----- VALIDATE STATE CODE & GET STATE NAME -----
-// ----- VALIDATE STATE CODE & GET NUMERIC STATE ID -----
-if (!beneficiary.bene_state) {
-  throw new Error(`Beneficiary ${beneficiary.id} (${beneficiary.account_holder_name}) has no state code.`);
-}
-
-let stateNumeric = beneficiary.bene_state; // fallback (should not be used)
-try {
-  const rawStates = await payoutProvider.getStateList();
-   // ✅ LOG ALL STATES
-  console.log('[DMT DEBUG] Total states from provider:', rawStates.length);
-  console.log('[DMT DEBUG] ALL STATES:', JSON.stringify(rawStates));
-  // Extract valid codes (two‑letter) for validation
-  const validStateCodes = rawStates.map(s => s.stateCode || s.code || s.state_id);
-  console.log('[DMT] Full valid state codes:', validStateCodes);
-  console.log('[DMT DEBUG] ALL Valid state codes:', validStateCodes);
-  console.log('[DMT DEBUG] Our bene_state:', beneficiary.bene_state);
-  console.log('[DMT DEBUG] Is our state in valid codes?', validStateCodes.includes(beneficiary.bene_state));
-
-  if (!validStateCodes.includes(beneficiary.bene_state)) {
-      console.log('[DMT DEBUG] ❌ STATE NOT FOUND! Our state:', beneficiary.bene_state);
-    console.log('[DMT DEBUG] Available codes:', validStateCodes);
-    throw new Error(
-      `Invalid state code: "${beneficiary.bene_state}". ` +
-      `Valid codes: ${validStateCodes.join(', ')}`
+    // 3. Fetch beneficiary
+    const { rows: beneficiaries } = await client.query(
+      `SELECT * FROM dmt_beneficiaries WHERE id = $1 AND remitter_id = $2 AND is_active = true`,
+      [beneficiaryId, remitterId]
     );
-  }
-  console.log('[DMT DEBUG] ✅ State found!');
+    if (beneficiaries.length === 0) throw new Error('Beneficiary not found');
+    const beneficiary = beneficiaries[0];
 
-  // Find the state object
-  const stateObj = rawStates.find(s => (s.stateCode || s.code || s.state_id) === beneficiary.bene_state);
-  if (stateObj) {
-    // Extract numeric ID – adjust field names as per actual response
-    // stateNumeric = stateObj.stateId || stateObj.id || stateObj.state_id || stateObj.codeId;
-     stateNumeric = stateObj.code || stateObj.stateCode || stateObj.stateId || stateObj.id || stateObj.state_id || stateObj.codeId;
-    console.log(`[DMT] Mapped state code "${beneficiary.bene_state}" to numeric ID "${stateNumeric}"`);
-  } else {
-    throw new Error(`State object not found for code "${beneficiary.bene_state}"`);
-  }
-} catch (stateErr) {
-  console.error('[DMT] State validation error:', stateErr.message);
-  throw new Error(`Cannot validate state code: ${stateErr.message}`);
-}
-// -----------------------------------------------------------
-
-
+    // ----- VALIDATE STATE CODE & GET NUMERIC STATE ID -----
     if (!beneficiary.bene_state) {
       throw new Error(`Beneficiary ${beneficiary.id} (${beneficiary.account_holder_name}) has no state code.`);
+    }
+
+    let stateNumeric = beneficiary.bene_state;
+    try {
+      const rawStates = await payoutProvider.getStateList();
+      console.log('[DMT DEBUG] Total states from provider:', rawStates.length);
+      
+      // Extract valid codes (two‑letter) for validation
+      const validStateCodes = rawStates.map(s => s.stateCode || s.code || s.state_id);
+      console.log('[DMT] Full valid state codes:', validStateCodes);
+      console.log('[DMT DEBUG] Our bene_state:', beneficiary.bene_state);
+      console.log('[DMT DEBUG] Is our state in valid codes?', validStateCodes.includes(beneficiary.bene_state));
+
+      if (!validStateCodes.includes(beneficiary.bene_state)) {
+        console.log('[DMT DEBUG] ❌ STATE NOT FOUND! Our state:', beneficiary.bene_state);
+        console.log('[DMT DEBUG] Available codes:', validStateCodes);
+        throw new Error(
+          `Invalid state code: "${beneficiary.bene_state}". ` +
+          `Valid codes: ${validStateCodes.join(', ')}`
+        );
+      }
+      console.log('[DMT DEBUG] ✅ State found!');
+
+      // Find the state object
+      const stateObj = rawStates.find(s => (s.stateCode || s.code || s.state_id) === beneficiary.bene_state);
+      if (stateObj) {
+        stateNumeric = stateObj.code || stateObj.stateCode || stateObj.stateId || stateObj.id || stateObj.state_id || stateObj.codeId;
+        console.log(`[DMT] Mapped state code "${beneficiary.bene_state}" to numeric ID "${stateNumeric}"`);
+      } else {
+        throw new Error(`State object not found for code "${beneficiary.bene_state}"`);
+      }
+    } catch (stateErr) {
+      console.error('[DMT] State validation error:', stateErr.message);
+      throw new Error(`Cannot validate state code: ${stateErr.message}`);
     }
 
     // 4. Per transaction limits
@@ -215,13 +200,13 @@ try {
         name: beneficiary.account_holder_name,
         mobile: beneficiary.beneficiary_mobile || '9999999999',
         location: stateNumeric,
-        // location: beneficiary.bene_state.trim().toUpperCase(),
         bankCode: beneficiary.bank_code
       },
       lat: lat || '0.0',
       long: long || '0.0'
     };
-console.log("[DMT] FINAL STATE SENT:", stateNumeric);
+    
+    console.log("[DMT] FINAL STATE SENT:", stateNumeric);
     debug.log('CALLING_PROVIDER', providerPayload);
 
     const providerStartTime = Date.now();
@@ -244,10 +229,28 @@ console.log("[DMT] FINAL STATE SENT:", stateNumeric);
 
     const responseTimeMs = Date.now() - providerStartTime;
 
-    // ✅ Extract UTR from provider response (like payout extracts bank_ref_no)
-    // Comprehensive UTR extraction from provider response
+    // ✅ FIX: Normalize provider response - handle both formats
+    // VimoPay can return txnStatusCode OR status
+    const statusCode = providerResult.txnStatusCode || 
+                       providerResult.status || 
+                       providerResult.code || 
+                       providerResult.responseCode;
+    
+    // ✅ FIX: Extract providerRefId from correct field
+    const providerRefId = providerResult.txnId || 
+                          providerResult.providerRefId || 
+                          providerResult.transactionId || 
+                          providerResult.id;
+    
+    // ✅ FIX: Extract response message
+    const responseMessage = providerResult.responseMessage || 
+                            providerResult.message || 
+                            providerResult.statusMessage;
+
+    // ✅ FIX: Extract UTR from provider response - comprehensive extraction
     const utrValue = providerResult.utr ||
                      providerResult.Utr ||
+                     providerResult.utrNumber ||
                      providerResult.rrn ||
                      providerResult.RRN ||
                      providerResult.bankRefNo ||
@@ -260,69 +263,95 @@ console.log("[DMT] FINAL STATE SENT:", stateNumeric);
                      providerResult.RefNo ||
                      providerResult.transactionReference ||
                      providerResult.TransactionReference ||
+                     providerResult.providerTxnId ||
                      null;
 
-    console.log(`[DMT] UTR from provider: ${utrValue}`);
+    console.log(`[DMT] Provider Response - Status: ${statusCode}, ProviderRefId: ${providerRefId}, UTR: ${utrValue}`);
+    console.log(`[DMT] Full Provider Response:`, JSON.stringify(providerResult, null, 2));
+
+    // ✅ FIX: Determine final status - handle both '000' and '00' as success
+    const isSuccess = statusCode === '000' || statusCode === '00' || statusCode === 'SUCCESS';
+    const isQueued = statusCode === '004' || statusCode === 'PENDING' || statusCode === 'QUEUED';
+    
+    let finalStatus;
+    if (isSuccess) {
+      finalStatus = 'success';
+    } else if (isQueued) {
+      finalStatus = 'pending';
+    } else {
+      finalStatus = 'failed';
+    }
+
+    console.log(`[DMT] Final status determined: ${finalStatus}`);
 
     // 12. Update status based on provider result
-    if (providerResult.status === '000' || providerResult.status === '004') {
-      const finalStatus = providerResult.status === '000' ? 'success' : 'pending';
-
-      // ✅ Store the UTR from provider (similar to how payout stores bank_ref_no)
+    if (isSuccess || isQueued) {
+      // ✅ Store UTR and provider reference
       await db.query(
         `UPDATE dmt_transactions 
          SET status = $1, 
              provider_txn_id = $2, 
              utr_number = $3,
+             raw_response = $4,
              updated_at = NOW()
-         WHERE iyda_txn_id = $4`,
-        [finalStatus, providerResult.providerRefId || null, utrValue, iydaTxnId]
+         WHERE iyda_txn_id = $5`,
+        [finalStatus, providerRefId || null, utrValue, JSON.stringify(providerResult), iydaTxnId]
       );
 
       await logProviderCall({
         merchantRefId: iydaTxnId, providerId: DMT_PROVIDER_ID, module: 'dmt',
         transactionType: 'transfer', requestPayload: providerPayload,
-        responsePayload: providerResult, status: providerResult.status,
+        responsePayload: providerResult, status: statusCode,
         errorMessage: null, httpStatus: 200, responseTimeMs, finalStatus
       });
 
-      // Commission crediting (based on transfer amount only)
-      try {
-        const serviceType = productType === 'lite' ? 'dmt' : 'dmt_smart';
-        await commissionService.processCommission(serviceType, amount, userId, {
-          subType: 'transfer', transactionRef: iydaTxnId
-        });
-        await db.query(
-          `UPDATE dmt_transactions SET commission_credited = TRUE WHERE iyda_txn_id = $1`,
-          [iydaTxnId]
-        );
-        debug.log('COMMISSION_CREDITED', { serviceType, amount });
-      } catch (commErr) {
-        console.error('Commission crediting failed (non‑blocking):', commErr);
+      // ✅ Commission crediting (only on immediate success, not on queued)
+      if (isSuccess) {
+        try {
+          const serviceType = productType === 'lite' ? 'dmt' : 'dmt_smart';
+          await commissionService.processCommission(serviceType, amount, userId, {
+            subType: 'transfer', transactionRef: iydaTxnId
+          });
+          await db.query(
+            `UPDATE dmt_transactions SET commission_credited = TRUE WHERE iyda_txn_id = $1`,
+            [iydaTxnId]
+          );
+          debug.log('COMMISSION_CREDITED', { serviceType, amount });
+        } catch (commErr) {
+          console.error('Commission crediting failed (non‑blocking):', commErr);
+        }
       }
 
       return { 
         success: true, 
         transactionId: iydaTxnId, 
         utrNumber: utrValue,
-        providerStatus: providerResult.status 
+        providerStatus: statusCode,
+        message: responseMessage || (isSuccess ? 'Transfer successful' : 'Transfer queued for processing')
       };
+      
     } else {
+      // Provider failure
       await db.query(
-        `UPDATE dmt_transactions SET status = 'failed', failure_reason = $1 WHERE iyda_txn_id = $2`,
-        [providerResult.message || 'Provider rejected', iydaTxnId]
+        `UPDATE dmt_transactions 
+         SET status = 'failed', 
+             failure_reason = $1, 
+             raw_response = $2,
+             updated_at = NOW()
+         WHERE iyda_txn_id = $3`,
+        [responseMessage || 'Provider rejected', JSON.stringify(providerResult), iydaTxnId]
       );
 
       await logProviderCall({
         merchantRefId: iydaTxnId, providerId: DMT_PROVIDER_ID, module: 'dmt',
         transactionType: 'transfer', requestPayload: providerPayload,
-        responsePayload: providerResult, status: providerResult.status,
-        errorMessage: providerResult.message || 'Provider rejected',
+        responsePayload: providerResult, status: statusCode,
+        errorMessage: responseMessage || 'Provider rejected',
         httpStatus: 200, responseTimeMs, finalStatus: 'failed'
       });
 
-      await rollbackFailedTransfer(userId, amount, totalDebit, remitterId, iydaTxnId, providerResult.message);
-      throw new Error(providerResult.message || 'Provider transfer failed');
+      await rollbackFailedTransfer(userId, amount, totalDebit, remitterId, iydaTxnId, responseMessage);
+      throw new Error(responseMessage || 'Provider transfer failed');
     }
 
   } catch (error) {
@@ -336,12 +365,6 @@ console.log("[DMT] FINAL STATE SENT:", stateNumeric);
 
 /**
  * Rollback a failed transfer: refund wallet (full debit amount), revert monthly used (transfer amount only).
- * @param {number} userId
- * @param {number} transferAmount - the amount sent to the beneficiary
- * @param {number} refundAmount   - total amount to refund (including surcharge)
- * @param {number} remitterId
- * @param {string} iydaTxnId
- * @param {string} reason
  */
 async function rollbackFailedTransfer(userId, transferAmount, refundAmount, remitterId, iydaTxnId, reason) {
   const client = await db.connect();
@@ -371,7 +394,6 @@ async function refundFailedTransaction(userId, amount, remitterId) {
   const client = await db.connect();
   try {
     await client.query('BEGIN');
-    // Note: amount here is the transfer amount (surcharge not considered because webhook refunds only transfer)
     await walletService.addMoney(userId, amount, 'Refund from DMT callback failure', null, client);
     await client.query(`UPDATE dmt_remitters SET monthly_used = monthly_used - $1 WHERE id = $2`, [amount, remitterId]);
     await client.query('COMMIT');

@@ -285,4 +285,230 @@ router.patch('/fund-request/:id/reject', async (req, res) => {
   }
 });
 
+
+
+// ─── ✅ NEW: GET /api/wallet/aeps-balance/:userId ──────────────────────────
+// Get AEPS wallet balance for a user
+router.get('/aeps-balance/:userId', async (req, res) => {
+  const { userId } = req.params;
+  try {
+    // Check if AEPS wallet exists
+    let result = await db.query(
+      `SELECT balance FROM aeps_wallets WHERE user_id = $1 LIMIT 1`,
+      [userId]
+    );
+    
+    // If no AEPS wallet, create one with 0 balance
+    if (result.rows.length === 0) {
+      await db.query(
+        `INSERT INTO aeps_wallets (user_id, balance, status, created_at, updated_at) 
+         VALUES ($1, $2, 'active', NOW(), NOW())`,
+        [userId, 0]
+      );
+      result = await db.query(
+        `SELECT balance FROM aeps_wallets WHERE user_id = $1 LIMIT 1`,
+        [userId]
+      );
+    }
+    
+    res.json({ 
+      success: true, 
+      balance: result.rows[0]?.balance ?? 0 
+    });
+  } catch (err) {
+    console.error('aeps-balance error:', err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── ✅ NEW: POST /api/wallet/transfer-aeps-to-main ─────────────────────────
+// Transfer money from AEPS wallet to Main wallet
+// ─── ✅ NEW: POST /api/wallet/transfer-aeps-to-main ─────────────────────────
+// Transfer money from AEPS wallet to Main wallet
+router.post('/transfer-aeps-to-main', async (req, res) => {
+  const { user_id, amount, description } = req.body;
+  
+  if (!user_id) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'User ID is required' 
+    });
+  }
+  
+  if (!amount || amount <= 0) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Invalid amount. Amount must be greater than 0' 
+    });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Check AEPS wallet
+    const aepsWalletResult = await client.query(
+      `SELECT id, balance FROM aeps_wallets WHERE user_id = $1 FOR UPDATE`,
+      [user_id]
+    );
+    
+    if (aepsWalletResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ 
+        success: false, 
+        message: 'AEPS wallet not found for this user' 
+      });
+    }
+
+    const aepsWallet = aepsWalletResult.rows[0];
+    const aepsBalance = parseFloat(aepsWallet.balance);
+    const amountNum = parseFloat(amount);
+
+    if (aepsBalance < amountNum) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ 
+        success: false, 
+        message: `Insufficient AEPS balance. Available: ₹${aepsBalance.toFixed(2)}` 
+      });
+    }
+
+    // 2. Check Main wallet
+    const mainWalletResult = await client.query(
+      `SELECT id, balance FROM wallets WHERE user_id = $1 FOR UPDATE`,
+      [user_id]
+    );
+    
+    if (mainWalletResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Main wallet not found for this user' 
+      });
+    }
+
+    const mainWallet = mainWalletResult.rows[0];
+    const mainBalance = parseFloat(mainWallet.balance);
+    const newMainBalance = mainBalance + amountNum;
+    const newAepsBalance = aepsBalance - amountNum;
+
+    // 3. Update AEPS wallet (decrease)
+    await client.query(
+      `UPDATE aeps_wallets 
+       SET balance = $1, updated_at = NOW() 
+       WHERE user_id = $2`,
+      [newAepsBalance, user_id]
+    );
+
+    // 4. Update Main wallet (increase)
+    await client.query(
+      `UPDATE wallets 
+       SET balance = $1, updated_at = NOW() 
+       WHERE user_id = $2`,
+      [newMainBalance, user_id]
+    );
+
+    // 5. Log in AEPS wallet ledger (debit) - FIXED: Use NULL for performed_by
+    await client.query(
+      `INSERT INTO aeps_wallet_ledger (
+         aeps_wallet_id, 
+         transaction_type, 
+         amount, 
+         balance_after, 
+         description, 
+         reference_id, 
+         performed_by, 
+         status, 
+         created_at
+       ) VALUES ($1, 'debit', $2, $3, $4, $5, $6, 'success', NOW())`,
+      [
+        aepsWallet.id, 
+        amountNum, 
+        newAepsBalance, 
+        description || 'Transferred to main wallet', 
+        `AEP2MAIN_${Date.now()}`,
+        null  // ✅ Use NULL instead of 'system'
+      ]
+    );
+
+    // 6. Log in main wallet ledger (credit)
+    await client.query(
+      `INSERT INTO wallet_ledger (
+         wallet_id, 
+         transaction_type, 
+         amount, 
+         balance_after, 
+         description, 
+         reference_id, 
+         status, 
+         created_at
+       ) VALUES ($1, 'credit', $2, $3, $4, $5, 'success', NOW())`,
+      [
+        mainWallet.id, 
+        amountNum, 
+        newMainBalance, 
+        description || 'Transferred from AEPS wallet', 
+        `AEP2MAIN_${Date.now()}`
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      message: `Successfully transferred ₹${amountNum.toFixed(2)} from AEPS to Main wallet`,
+      data: {
+        aeps_balance: newAepsBalance,
+        main_balance: newMainBalance,
+        transferred_amount: amountNum
+      }
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('❌ AEPS to Main transfer error:', err.message);
+    res.status(500).json({ 
+      success: false, 
+      message: err.message 
+    });
+  } finally {
+    client.release();
+  }
+});
+// ─── ✅ NEW: GET /api/wallet/aeps-ledger/:userId ────────────────────────────
+// Get AEPS wallet transaction history
+router.get('/aeps-ledger/:userId', async (req, res) => {
+  const { userId } = req.params;
+  try {
+    // First get the AEPS wallet ID
+    const walletResult = await db.query(
+      `SELECT id FROM aeps_wallets WHERE user_id = $1 LIMIT 1`,
+      [userId]
+    );
+    
+    if (walletResult.rows.length === 0) {
+      return res.json({ 
+        success: true, 
+        ledger: [] 
+      });
+    }
+    
+    const walletId = walletResult.rows[0].id;
+    
+    const result = await db.query(
+      `SELECT *
+       FROM aeps_wallet_ledger
+       WHERE aeps_wallet_id = $1
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      [walletId]
+    );
+    
+    res.json({ success: true, ledger: result.rows });
+  } catch (err) {
+    console.error('aeps-ledger error:', err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+
+
 module.exports = router;

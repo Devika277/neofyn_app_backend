@@ -39,7 +39,7 @@ async function processCommission(serviceType, transactionAmount, retailerUserId,
         serviceType   // pass the actual service type to the helper
       );
 
-      }  else if (serviceType === 'recharge') {
+      }  else if (serviceType === 'mobile') {
       commAmt = await getRechargeCommission(
         client, user.role, user.plan,
         transactionAmount, options.operator || ''
@@ -235,7 +235,7 @@ async function getRechargeCommission(client, role, plan, amount, operator) {
     const { rows } = await client.query(`
       SELECT rate_value, rate_type
       FROM commission_rates
-      WHERE service_type = 'recharge'
+      WHERE service_type = 'mobile'
         AND slab_name    = $1
         AND role         = $2
         AND (plan = $3 OR plan IS NULL)

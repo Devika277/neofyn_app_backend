@@ -32,13 +32,21 @@ class RechargeService {
                     const tx = existing.rows[0];
                     await client.query('ROLLBACK');
                     logger.info(`RechargeService: Duplicate request prevented for key ${idempotencyKey}`);
-                    return {
-                        success: tx.status === 'success',
+                                       return {
+                        success: tx.status === 'success' || tx.status === 'pending',
+                        status: tx.status,
                         message: tx.status === 'success' ? 'Recharge already processed' : 'Recharge previously failed',
                         transactionId: tx.id,
                         provider: tx.provider_txn_id,
                         refunded: tx.status === 'failed'
                     };
+                    // return {
+                    //     success: tx.status === 'success',
+                    //     message: tx.status === 'success' ? 'Recharge already processed' : 'Recharge previously failed',
+                    //     transactionId: tx.id,
+                    //     provider: tx.provider_txn_id,
+                    //     refunded: tx.status === 'failed'
+                    // };
                 }
             }
 
@@ -186,9 +194,9 @@ class RechargeService {
                     if (finalStatus === 'success') {
                         // Map provider operator names to commission_rates.slab_name
                         const operatorMap = {
-                            'JIO':           'JIORECH',
-                            'JIORECHARGE':   'JIORECH',
-                            'JIORECH':       'JIORECH',
+                            'JIO':           'JIO',
+                            'JIORECHARGE':   'JIO',
+                            'JIORECH':       'JIO',
                             'BSNL':          'BSNL_TOPUP',
                             'BSNLTOPUP':     'BSNL_TOPUP',
                             'BSNL_TOPUP':    'BSNL_TOPUP',
@@ -214,13 +222,25 @@ class RechargeService {
                         });
                     }
 
-                    return {
-                        success: finalStatus === 'success',
-                        message: finalStatus === 'success' ? 'Recharge successful' : (finalStatus === 'pending' ? 'Recharge is processing' : `Recharge failed: ${finalMessage}`),
+                                        return {
+                        success: finalStatus === 'success' || finalStatus === 'pending',
+                        status: finalStatus,
+                        message: finalStatus === 'success' 
+                            ? 'Recharge successful' 
+                            : (finalStatus === 'pending' 
+                                ? 'Recharge submitted. Processing...' 
+                                : `Recharge failed: ${finalMessage}`),
                         transactionId,
                         provider: providerResponse?.provider_txn_id || null,
                         refunded
                     };
+                    // return {
+                    //     success: finalStatus === 'success',
+                    //     message: finalStatus === 'success' ? 'Recharge successful' : (finalStatus === 'pending' ? 'Recharge is processing' : `Recharge failed: ${finalMessage}`),
+                    //     transactionId,
+                    //     provider: providerResponse?.provider_txn_id || null,
+                    //     refunded
+                    // };
 
                 } catch (error) {
                     await client.query('ROLLBACK');
@@ -306,24 +326,26 @@ class RechargeService {
      * @param {string} circle - Circle/state (e.g., 'Tamil Nadu', 'ALL')
      * @returns {Promise<Array>} Array of plan objects
      */
-    async getPlansByOperatorAndCircle(operator, circle = 'ALL') {
-        try {
-            const result = await db.query(
-                `SELECT id, operator, amount, validity_days, data_benefit,
-                        category, circle, display_order, is_active
-                 FROM recharge_plans
-                 WHERE operator = $1
-                   AND is_active = true
-                   AND (circle = $2 OR circle = 'ALL')
-                 ORDER BY category, display_order ASC, amount ASC`,
-                [operator, circle]
-            );
-            return result.rows;
-        } catch (error) {
-            logger.error('RechargeService: Error fetching plans', { error: error.message, operator, circle });
-            throw error;
-        }
+    // backend/services/rechargeService.js
+
+async getPlansByOperatorAndCircle(operator, circle = 'ALL') {
+    try {
+        const result = await db.query(
+            `SELECT id, operator, amount, validity_days, data_benefit,
+                    category, circle, display_order, is_active
+             FROM recharge_plans
+             WHERE operator = $1
+               AND is_active = true
+               AND (circle ILIKE $2 OR circle = 'ALL')
+             ORDER BY category, display_order ASC, amount ASC`,
+            [operator, circle]
+        );
+        return result.rows;
+    } catch (error) {
+        logger.error('RechargeService: Error fetching plans', { error: error.message, operator, circle });
+        throw error;
     }
+}
 }
 
 module.exports = new RechargeService();
