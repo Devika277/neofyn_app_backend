@@ -213,7 +213,16 @@ async function processDmtTransfer(userId, { remitterId, beneficiaryId, amount, t
     let providerResult;
 
     try {
-      providerResult = await dmtProviderRouter.sendDmtTransfer(providerPayload);
+      // providerResult = await dmtProviderRouter.sendDmtTransfer(providerPayload);
+     providerResult = await Promise.race([
+    dmtProviderRouter.sendDmtTransfer(providerPayload),
+
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Provider timeout')), 15000)
+    )
+
+  ]);
+
     } catch (providerError) {
       const responseTimeMs = Date.now() - providerStartTime;
       await logProviderCall({
