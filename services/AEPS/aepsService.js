@@ -1042,6 +1042,171 @@ const getAllMerchants = async () => {
 };
 
 
+// =====================================================
+// MERCHANT PROFILE - SERVICE LAYER
+// =====================================================
+
+// Get merchant profile (first registered pipe only)
+const getMerchantProfile = async (userId) => {
+  try {
+    const result = await db.query(
+      `
+      SELECT 
+        am.user_id,
+        am.merchant_ref_id,
+        am.merchant_id,
+        am.shop_address,
+        am.shop_pincode,
+        am.state_code,
+        am.district_code,
+        am.bank_account,
+        am.bank_ifsc,
+        am.bank_name_code,
+        am.pipe,
+        am.created_at as registered_at,
+        u.first_name,
+        u.last_name,
+        u.middle_name,
+        u.email,
+        u.phone as mobile,
+        u.address as user_address,
+        u.city,
+        u.state,
+        u.pincode,
+        u.dob,
+        u.aadhaar_no,
+        u.pan_no
+      FROM aeps_merchants am
+      JOIN users u ON am.user_id = u.id
+      WHERE am.user_id = $1
+      ORDER BY am.created_at ASC
+      LIMIT 1
+      `,
+      [userId]
+    );
+    
+    if (result.rows.length === 0) {
+      return null;
+    }
+    
+    const record = result.rows[0];
+    
+    return {
+      personalDetails: {
+        firstName: record.first_name,
+        middleName: record.middle_name,
+        lastName: record.last_name,
+        email: record.email,
+        mobile: record.mobile,
+        dob: record.dob,
+        aadhaarNo: record.aadhaar_no ? maskAadhaar(record.aadhaar_no) : null,
+        panNo: record.pan_no ? maskPan(record.pan_no) : null,
+      },
+      shopDetails: {
+        shopAddress: record.shop_address,
+        shopPincode: record.shop_pincode,
+        stateCode: record.state_code,
+        districtCode: record.district_code,
+      },
+      bankDetails: {
+        bankAccount: record.bank_account ? maskAccount(record.bank_account) : null,
+        bankIfsc: record.bank_ifsc,
+        bankNameCode: record.bank_name_code,
+      },
+      merchantDetails: {
+        merchantRefId: record.merchant_ref_id,
+        merchantId: record.merchant_id,
+        pipe: record.pipe,
+        registeredAt: record.registered_at,
+      }
+    };
+    
+  } catch (error) {
+    console.error('[AEPS SERVICE] getMerchantProfile error:', error);
+    throw new Error('Failed to fetch merchant profile: ' + error.message);
+  }
+};
+
+// Get merchant profile by specific pipe
+const getMerchantProfileByPipe = async (userId, pipe) => {
+  try {
+    if (!['1', '2', '3'].includes(pipe)) {
+      throw new Error('Invalid pipe value. Must be "1", "2", or "3".');
+    }
+    
+    const result = await db.query(
+      `
+      SELECT 
+        am.user_id,
+        am.merchant_ref_id,
+        am.merchant_id,
+        am.shop_address,
+        am.shop_pincode,
+        am.state_code,
+        am.district_code,
+        am.bank_account,
+        am.bank_ifsc,
+        am.bank_name_code,
+        am.pipe,
+        am.created_at as registered_at,
+        u.first_name,
+        u.last_name,
+        u.middle_name,
+        u.email,
+        u.phone as mobile,
+        u.address as user_address,
+        u.city,
+        u.state,
+        u.pincode,
+        u.dob,
+        u.aadhaar_no,
+        u.pan_no
+      FROM aeps_merchants am
+      JOIN users u ON am.user_id = u.id
+      WHERE am.user_id = $1 AND am.pipe = $2
+      `,
+      [userId, pipe]
+    );
+    
+    if (result.rows.length === 0) {
+      return null;
+    }
+    
+    return result.rows[0];
+    
+  } catch (error) {
+    console.error('[AEPS SERVICE] getMerchantProfileByPipe error:', error);
+    throw new Error('Failed to fetch merchant profile for pipe ' + pipe);
+  }
+};
+
+// Helper: Mask sensitive data
+const maskAadhaar = (aadhaar) => {
+  if (!aadhaar) return null;
+  const str = aadhaar.toString();
+  if (str.length === 12) {
+    return `XXXX-XXXX-${str.slice(-4)}`;
+  }
+  return str;
+};
+
+const maskPan = (pan) => {
+  if (!pan) return null;
+  const str = pan.toString();
+  if (str.length === 10) {
+    return `${str.slice(0, 5)}XXXXX`;
+  }
+  return str;
+};
+
+const maskAccount = (account) => {
+  if (!account) return null;
+  const str = account.toString();
+  if (str.length > 4) {
+    return `XXXX-XXXX-${str.slice(-4)}`;
+  }
+  return str;
+};
 
 
 

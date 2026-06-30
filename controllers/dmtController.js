@@ -527,50 +527,291 @@ exports.adminGetAllDmtTransactions = async (req, res) => {
 
 // ========== WEBHOOK ==========
 
+
+// ========== WEBHOOK ==========
+// async function processWebhookUpdate(
+//   iydaTxnId,
+//   finalStatus,
+//   txnId,
+//   rrn,
+//   responseMessage,
+//   body,
+
+//   res
+// ){
+
+//   const update = await db.query(
+//     `
+//     UPDATE dmt_transactions
+//     SET 
+//       status=$1,
+//       provider_txn_id=COALESCE(provider_txn_id,$2),
+//       utr_number=COALESCE(utr_number,$3),
+//       failure_reason=$4,
+//       raw_response=$5,
+//       updated_at=NOW()
+//     WHERE iyda_txn_id=$6
+//     RETURNING id,retailer_id,amount,remitter_id,commission_credited
+//     `,
+//     [
+//       finalStatus,
+//       txnId || null,
+//       rrn || null,
+//       finalStatus==='failed'
+//         ? responseMessage
+//         : null,
+//       JSON.stringify(body),
+//       iydaTxnId
+//     ]
+//   );
+
+
+//   console.log(
+//     "Webhook update rows:",
+//     update.rowCount
+//   );
+
+
+//   if(update.rows.length){
+
+//     const txn = update.rows[0];
+
+
+//     if(finalStatus==="success" && !txn.commission_credited){
+
+//       try{
+
+//         const {rows}=await db.query(
+//           `
+//           SELECT product_type
+//           FROM dmt_remitters
+//           WHERE id=$1
+//           `,
+//           [txn.remitter_id]
+//         );
+
+
+//         if(rows.length){
+
+//           const serviceType =
+//           rows[0].product_type==="lite"
+//           ?
+//           "dmt"
+//           :
+//           "dmt_smart";
+
+
+//           await commissionService.processCommission(
+//             serviceType,
+//             Number(txn.amount),
+//             txn.retailer_id,
+//             {
+//               subType:"transfer",
+//               transactionRef:iydaTxnId
+//             }
+//           );
+
+
+//           await db.query(
+//             `
+//             UPDATE dmt_transactions
+//             SET commission_credited=true
+//             WHERE id=$1
+//             `,
+//             [txn.id]
+//           );
+
+
+//         }
+
+//       }catch(e){
+//         console.log(
+//           "Commission error:",
+//           e.message
+//         );
+//       }
+
+//     }
+
+
+//     if(finalStatus==="failed"){
+
+//       await dmtService.refundFailedTransaction(
+//         txn.retailer_id,
+//         Number(txn.amount),
+//         txn.remitter_id
+//       );
+
+//     }
+
+//   }
+
+
+//  return res.status(200).json({
+//    successStatus:true,
+//    message:"processed",
+//    responseCode:"000"
+//  });
+
+
+// }
 exports.dmtWebhook = async (req, res) => {
   try {
+    console.log('🔴 ========================================');
     console.log('🔴 DMT WEBHOOK RECEIVED');
-    console.log('Full Payload:', JSON.stringify(req.body, null, 2));
+    console.log('🔴 Timestamp:', new Date().toISOString());
+    console.log('🔴 Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('🔴 Full Payload:', JSON.stringify(req.body, null, 2));
+    console.log('🔴 ========================================');
 
-    const body = req.body;
-    const { 
-      txnStatusCode, 
-      txnId, 
-      merchantRefId,   // comes as DMT-37-xxx-xxx (hyphens)
-      rrn, 
-      responseMessage 
-    } = body;
+    // const body = req.body;
+    const body = req.body.data || req.body;
+    console.log(
+ "FINAL CALLBACK BODY:",
+ JSON.stringify(body,null,2)
+);
+    // Extract identifiers - try multiple possible field names
+    const merchantRefId = body.merchantRefId || 
+                          body.merchant_ref_id || 
+                          body.orderId || 
+                          body.order_id ||
+                          body.clientRefId ||
+                          body.txnId;
+    const txnStatusCode = String(
+  body.txnStatusCode ||
+  body.status ||
+  body.txnStatus ||
+  body.responseCode ||
+  ''
+);
+    // const txnStatusCode = body.txnStatusCode || 
+    //                       body.status || 
+    //                       body.txnStatus ||
+    //                       body.responseCode;
+    
+    // const rrn = body.rrn || 
+    //             body.utr || 
+    //             body.UTR || 
+    //             body.bankRefNo ||
+    //             body.referenceNumber;
+const rrn =
+      body.rrn ||
+      body.utr ||
+      body.UTR ||
+      body.bankRefNo ||
+      body.bankReferenceNumber ||
+      body.transactionReferenceNumber ||
+      body.referenceNumber ||
+      null;    
+    const txnId = body.txnId || 
+                  body.transactionId || 
+                  body.providerRefId;
+    
+    const responseMessage = body.responseMessage || 
+                            body.message || 
+                            body.statusMessage;
+
+    console.log(`📊 Extracted merchantRefId: ${merchantRefId}`);
+    console.log(`📊 Extracted txnStatusCode: ${txnStatusCode}`);
+    console.log(`📊 Extracted rrn/UTR: ${rrn}`);
+    console.log(`📊 Extracted txnId: ${txnId}`);
 
     if (!merchantRefId) {
-      console.log('⚠️ No merchantRefId in webhook');
-      return res.status(200).json({ successStatus: true, message: 'Success', responseCode: '000' });
+      console.log('⚠️ No merchantRefId found in webhook - cannot process');
+      // Still return 200 so VimoPay doesn't retry
+      return res.status(200).json({ 
+        successStatus: true, 
+        message: 'No reference ID', 
+        responseCode: '000' 
+      });
     }
 
-    // ✅ Normalize hyphens → underscores to match DB
-    const iydaTxnId = merchantRefId.replace(/-/g, '_');
-    console.log(`📊 merchantRefId from VimoPay: ${merchantRefId}`);
-    console.log(`📊 Normalized for DB lookup:   ${iydaTxnId}`);
-    console.log(`📊 txnStatusCode: ${txnStatusCode}, rrn: ${rrn}`);
+    // Normalize: replace hyphens with underscores for DB lookup
+    const iydaTxnId = String(merchantRefId).replace(/-/g, '_');
+    // const iydaTxnId = merchantRefId;
+    console.log(`📊 Normalized iydaTxnId for DB: ${iydaTxnId}`);
 
     // Determine status
-    const finalStatus = 
-      txnStatusCode === '000' ? 'success' :
-      txnStatusCode === '001' ? 'failed'  : 
-      txnStatusCode === '002' ? 'rejected' : 'pending';
+    let finalStatus;
+    if (txnStatusCode === '000' || txnStatusCode === '00' || txnStatusCode === 'SUCCESS') {
+      finalStatus = 'success';
+    } else if (txnStatusCode === '001' || txnStatusCode === '01' || txnStatusCode === 'FAILED' || txnStatusCode === 'FAILURE') {
+      finalStatus = 'failed';
+    } else if (txnStatusCode === '002' || txnStatusCode === '02' || txnStatusCode === 'REJECTED') {
+      finalStatus = 'rejected';
+    } else if (txnStatusCode === '004' || txnStatusCode === '04' || txnStatusCode === 'PENDING') {
+      finalStatus = 'pending';
+    } else {
+      finalStatus = 'pending';
+    }
 
     console.log(`📊 Final status: ${finalStatus}`);
 
-    // ✅ FIXED: Use correct column name 'iyda_txn_id'
+    // First check if transaction exists
+    const checkResult = await db.query(
+      `SELECT id, status, retailer_id, amount, remitter_id, commission_credited 
+       FROM dmt_transactions 
+       WHERE iyda_txn_id = $1`,
+      [iydaTxnId]
+    );
+
+    if (checkResult.rows.length === 0) {
+      console.error(`❌ No transaction found for iydaTxnId: ${iydaTxnId}`);
+      
+      // Try with original merchantRefId (without normalization)
+      const checkResult2 = await db.query(
+        `SELECT id, iyda_txn_id FROM dmt_transactions WHERE iyda_txn_id = $1`,
+        [merchantRefId]
+      );
+      
+      if (checkResult2.rows.length > 0) {
+        console.log(`✅ Found with original merchantRefId: ${merchantRefId}`);
+        // Use this instead
+        return processWebhookUpdate(merchantRefId, finalStatus, txnId, rrn, responseMessage, body, res);
+      }
+      
+      console.error(`❌ Transaction not found with either format`);
+      return res.status(200).json({ 
+        successStatus: true, 
+        message: 'Transaction not found', 
+        responseCode: '000' 
+      });
+    }
+
+    const existingTxn = checkResult.rows[0];
+    console.log(`✅ Found transaction: ID=${existingTxn.id}, Current Status=${existingTxn.status}`);
+
+    // If already in final state, don't update
+    if (existingTxn.status === 'success' && finalStatus === 'success') {
+      console.log(`⚠️ Transaction already marked as success - skipping update`);
+      
+      // But update UTR if we have it and it's missing
+      if (rrn) {
+        await db.query(
+          `UPDATE dmt_transactions SET utr_number = $1, raw_response = $2, updated_at = NOW() 
+           WHERE iyda_txn_id = $3 AND utr_number IS NULL`,
+          [rrn, JSON.stringify(body), iydaTxnId]
+        );
+        console.log(`✅ UTR updated to: ${rrn}`);
+      }
+      
+      return res.status(200).json({ 
+        successStatus: true, 
+        message: 'Already processed', 
+        responseCode: '000' 
+      });
+    }
+
+    // Update transaction
     const updateResult = await db.query(
       `UPDATE dmt_transactions 
        SET status = $1, 
            provider_txn_id = COALESCE(provider_txn_id, $2),
-           utr_number = $3,
+           utr_number = COALESCE(utr_number, $3),
            failure_reason = $4,
            raw_response = $5,
            updated_at = NOW()
-       WHERE iyda_txn_id = $6 
-       AND status = 'pending'
+       WHERE iyda_txn_id = $6
        RETURNING id, retailer_id, amount, remitter_id, commission_credited`,
       [
         finalStatus,
@@ -578,7 +819,7 @@ exports.dmtWebhook = async (req, res) => {
         rrn || null,
         finalStatus === 'failed' ? (responseMessage || 'Provider failure') : null,
         JSON.stringify(body),
-        iydaTxnId  // ✅ Use the normalized version (with underscores)
+        iydaTxnId
       ]
     );
 
@@ -586,7 +827,7 @@ exports.dmtWebhook = async (req, res) => {
 
     if (updateResult.rows.length > 0) {
       const txn = updateResult.rows[0];
-      console.log(`✅ Transaction ${iydaTxnId} updated to ${finalStatus}`);
+      console.log(`✅ Transaction ${iydaTxnId} updated to ${finalStatus}, UTR: ${rrn}`);
 
       // Credit commission on success
       if (finalStatus === 'success' && !txn.commission_credited) {
@@ -618,7 +859,7 @@ exports.dmtWebhook = async (req, res) => {
       // Refund on failure
       if (finalStatus === 'failed') {
         try {
-          const dmtService = require('../services/dmtService');
+          const dmtService = require('../services/DMT/dmtServiceNew');
           await dmtService.refundFailedTransaction(
             txn.retailer_id,
             parseFloat(txn.amount),
@@ -629,31 +870,152 @@ exports.dmtWebhook = async (req, res) => {
           console.error(`❌ Refund error:`, refundErr.message);
         }
       }
-    } else {
-      console.warn(`⚠️ No pending DMT transaction found for iyda_txn_id: ${iydaTxnId}`);
-      
-      // 🔍 Debug: Check if transaction exists with different status
-      const checkResult = await db.query(
-        `SELECT id, status, iyda_txn_id FROM dmt_transactions 
-         WHERE iyda_txn_id = $1`,
-        [iydaTxnId]
-      );
-      
-      if (checkResult.rows.length > 0) {
-        console.log(`🔍 Found transaction but status is: ${checkResult.rows[0].status} (not 'pending')`);
-        console.log(`🔍 Transaction ID: ${checkResult.rows[0].id}`);
-      } else {
-        console.log(`🔍 No transaction found with iyda_txn_id: ${iydaTxnId}`);
-      }
     }
 
-    return res.status(200).json({ successStatus: true, message: 'Success', responseCode: '000' });
+    return res.status(200).json({ 
+      successStatus: true, 
+      message: 'Success', 
+      responseCode: '000' 
+    });
 
   } catch (error) {
     console.error('❌ DMT Webhook error:', error.message, error.stack);
-    return res.status(200).json({ successStatus: true, message: 'Error logged' });
+    // Always return 200 so VimoPay doesn't keep retrying
+    return res.status(200).json({ 
+      successStatus: true, 
+      message: 'Error logged but acknowledged', 
+      responseCode: '000' 
+    });
   }
 };
+
+// exports.dmtWebhook = async (req, res) => {
+//   try {
+//     console.log('🔴 DMT WEBHOOK RECEIVED');
+//     console.log('Full Payload:', JSON.stringify(req.body, null, 2));
+
+//     const body = req.body;
+//     const { 
+//       txnStatusCode, 
+//       txnId, 
+//       merchantRefId,   // comes as DMT-37-xxx-xxx (hyphens)
+//       rrn, 
+//       responseMessage 
+//     } = body;
+
+//     if (!merchantRefId) {
+//       console.log('⚠️ No merchantRefId in webhook');
+//       return res.status(200).json({ successStatus: true, message: 'Success', responseCode: '000' });
+//     }
+
+//     // ✅ Normalize hyphens → underscores to match DB
+//     const iydaTxnId = merchantRefId.replace(/-/g, '_');
+//     console.log(`📊 merchantRefId from VimoPay: ${merchantRefId}`);
+//     console.log(`📊 Normalized for DB lookup:   ${iydaTxnId}`);
+//     console.log(`📊 txnStatusCode: ${txnStatusCode}, rrn: ${rrn}`);
+
+//     // Determine status
+//     const finalStatus = 
+//       txnStatusCode === '000' ? 'success' :
+//       txnStatusCode === '001' ? 'failed'  : 
+//       txnStatusCode === '002' ? 'rejected' : 'pending';
+
+//     console.log(`📊 Final status: ${finalStatus}`);
+
+//     // ✅ FIXED: Use correct column name 'iyda_txn_id'
+//     const updateResult = await db.query(
+//       `UPDATE dmt_transactions 
+//        SET status = $1, 
+//            provider_txn_id = COALESCE(provider_txn_id, $2),
+//            utr_number = $3,
+//            failure_reason = $4,
+//            raw_response = $5,
+//            updated_at = NOW()
+//        WHERE iyda_txn_id = $6 
+//        AND status = 'pending'
+//        RETURNING id, retailer_id, amount, remitter_id, commission_credited`,
+//       [
+//         finalStatus,
+//         txnId || null,
+//         rrn || null,
+//         finalStatus === 'failed' ? (responseMessage || 'Provider failure') : null,
+//         JSON.stringify(body),
+//         iydaTxnId  // ✅ Use the normalized version (with underscores)
+//       ]
+//     );
+
+//     console.log(`✅ Rows updated: ${updateResult.rowCount}`);
+
+//     if (updateResult.rows.length > 0) {
+//       const txn = updateResult.rows[0];
+//       console.log(`✅ Transaction ${iydaTxnId} updated to ${finalStatus}`);
+
+//       // Credit commission on success
+//       if (finalStatus === 'success' && !txn.commission_credited) {
+//         try {
+//           const { rows: rem } = await db.query(
+//             `SELECT product_type FROM dmt_remitters WHERE id = $1`,
+//             [txn.remitter_id]
+//           );
+//           if (rem.length > 0) {
+//             const commissionService = require('../services/Commission/commissionService');
+//             const serviceType = rem[0].product_type === 'lite' ? 'dmt' : 'dmt_smart';
+//             await commissionService.processCommission(
+//               serviceType,
+//               parseFloat(txn.amount),
+//               txn.retailer_id,
+//               { subType: 'transfer', transactionRef: iydaTxnId }
+//             );
+//             await db.query(
+//               `UPDATE dmt_transactions SET commission_credited = TRUE WHERE id = $1`,
+//               [txn.id]
+//             );
+//             console.log(`✅ Commission credited for ${iydaTxnId}`);
+//           }
+//         } catch (commErr) {
+//           console.error(`❌ Commission error:`, commErr.message);
+//         }
+//       }
+
+//       // Refund on failure
+//       if (finalStatus === 'failed') {
+//         try {
+//           const dmtService = require('../services/dmtService');
+//           await dmtService.refundFailedTransaction(
+//             txn.retailer_id,
+//             parseFloat(txn.amount),
+//             txn.remitter_id
+//           );
+//           console.log(`✅ Refund done for ${iydaTxnId}`);
+//         } catch (refundErr) {
+//           console.error(`❌ Refund error:`, refundErr.message);
+//         }
+//       }
+//     } else {
+//       console.warn(`⚠️ No pending DMT transaction found for iyda_txn_id: ${iydaTxnId}`);
+      
+//       // 🔍 Debug: Check if transaction exists with different status
+//       const checkResult = await db.query(
+//         `SELECT id, status, iyda_txn_id FROM dmt_transactions 
+//          WHERE iyda_txn_id = $1`,
+//         [iydaTxnId]
+//       );
+      
+//       if (checkResult.rows.length > 0) {
+//         console.log(`🔍 Found transaction but status is: ${checkResult.rows[0].status} (not 'pending')`);
+//         console.log(`🔍 Transaction ID: ${checkResult.rows[0].id}`);
+//       } else {
+//         console.log(`🔍 No transaction found with iyda_txn_id: ${iydaTxnId}`);
+//       }
+//     }
+
+//     return res.status(200).json({ successStatus: true, message: 'Success', responseCode: '000' });
+
+//   } catch (error) {
+//     console.error('❌ DMT Webhook error:', error.message, error.stack);
+//     return res.status(200).json({ successStatus: true, message: 'Error logged' });
+//   }
+// };
 
 // ========== MASTER DATA ==========
 

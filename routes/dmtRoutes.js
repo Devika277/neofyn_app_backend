@@ -64,6 +64,12 @@ router.delete('/beneficiary/:beneficiaryId', dmtController.deleteBeneficiary);
 // ────────────────────────────────────────────────────────────
 // TRANSFER (TPIN‑only – no OTP request route)
 // ────────────────────────────────────────────────────────────
+// webhook - NO AUTH MIDDLEWARE
+// router.post(
+//   '/callback',
+//   dmtController.dmtWebhook
+// );
+
 router.post('/transfer', requirePermission('dmt.transfer'), dmtController.createDmtTransfer);
 
 // ────────────────────────────────────────────────────────────

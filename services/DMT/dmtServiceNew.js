@@ -270,7 +270,15 @@ async function processDmtTransfer(userId, { remitterId, beneficiaryId, amount, t
     console.log(`[DMT] Full Provider Response:`, JSON.stringify(providerResult, null, 2));
 
     // ✅ FIX: Determine final status - handle both '000' and '00' as success
-    const isSuccess = statusCode === '000' || statusCode === '00' || statusCode === 'SUCCESS';
+    // const isSuccess = statusCode === '000' || statusCode === '00' || statusCode === 'SUCCESS';
+    const normalizedStatus =
+String(statusCode).toUpperCase();
+
+
+const isSuccess =
+normalizedStatus === '000' ||
+normalizedStatus === '00' ||
+normalizedStatus === 'SUCCESS';
     const isQueued = statusCode === '004' || statusCode === 'PENDING' || statusCode === 'QUEUED';
     
     let finalStatus;
