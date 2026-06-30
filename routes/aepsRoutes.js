@@ -40,6 +40,9 @@ const aepsWalletService = require('../services/AEPS/aepsWalletService');
 const { protect: authenticate } = require('../middleware/authMiddleware');
 const { isAdmin } = require('../middleware/adminMiddleware');
 
+const aepsController = require('../controllers/aepsControllers'); // ✅ Import controller
+
+
 // ==============================
 // Helper: Real IP extraction (static sandbox IP only for local development)
 // ==============================
@@ -717,5 +720,24 @@ router.post('/admin/refresh-bank-iins', authenticate, isAdmin, async (req, res) 
 router.post('/callback', async (req, res) => {
   res.sendStatus(200);
 });
+
+
+// =====================================================
+// MERCHANT PROFILE ROUTES
+// =====================================================
+
+// Get merchant profile (first registered pipe)
+router.get(
+    '/merchant/profile/:userId',
+    authenticate,
+    aepsController.getMerchantProfile
+);
+
+// Get merchant profile by specific pipe
+router.get(
+    '/merchant/profile/:userId/pipe/:pipe',
+    authenticate,
+    aepsController.getMerchantProfileByPipe
+);
 
 module.exports = router;

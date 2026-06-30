@@ -802,7 +802,10 @@
 
 
 // controllers/aepsController.js
-const db = require('../../config/db');
+const db = require('../config/db');
+const aepsService = require('../services/AEPS/aepsService'); // ✅ ADD THIS IMPORT
+
+
 
 class AepsController {
     /**
@@ -867,6 +870,96 @@ class AepsController {
             res.status(500).json({ success: false, error: 'Internal Server Error' });
         }
     }
+
+    
+    // =====================================================
+    // MERCHANT PROFILE - Get First Registered Pipe Only
+    // =====================================================
+    /**
+     * Get merchant profile (first registered pipe only)
+     * GET /api/aeps/merchant/profile/:userId
+     */
+    async getMerchantProfile(req, res) {
+        try {
+            const userId = req.params.userId;
+            
+            // Authorization check
+            if (req.user.id !== parseInt(userId) && req.user.role !== 'admin') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'You do not have permission to view this profile'
+                });
+            }
+            
+            const profile = await aepsService.getMerchantProfile(userId);
+            
+            if (!profile) {
+                return res.status(200).json({
+                    success: false,
+                    message: 'No AEPS merchant profile found. Please complete registration.',
+                    data: null
+                });
+            }
+            
+            return res.status(200).json({
+                success: true,
+                data: profile
+            });
+            
+        } catch (error) {
+            console.error('[AEPS-CTRL] getMerchantProfile error:', error.message);
+            return res.status(500).json({
+                success: false,
+                message: 'Failed to fetch merchant profile',
+                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            });
+        }
+    }
+
+    // =====================================================
+    // MERCHANT PROFILE - Get by Specific Pipe
+    // =====================================================
+    /**
+     * Get merchant profile by specific pipe
+     * GET /api/aeps/merchant/profile/:userId/pipe/:pipe
+     */
+    async getMerchantProfileByPipe(req, res) {
+        try {
+            const { userId, pipe } = req.params;
+            
+            // Authorization check
+            if (req.user.id !== parseInt(userId) && req.user.role !== 'admin') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'You do not have permission to view this profile'
+                });
+            }
+            
+            const profile = await aepsService.getMerchantProfileByPipe(userId, pipe);
+            
+            if (!profile) {
+                return res.status(200).json({
+                    success: false,
+                    message: `No merchant profile found for pipe ${pipe}`,
+                    data: null
+                });
+            }
+            
+            return res.status(200).json({
+                success: true,
+                data: profile
+            });
+            
+        } catch (error) {
+            console.error('[AEPS-CTRL] getMerchantProfileByPipe error:', error.message);
+            return res.status(500).json({
+                success: false,
+                message: 'Failed to fetch merchant profile',
+                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            });
+        }
+    }
+
 }
 
 module.exports = new AepsController();

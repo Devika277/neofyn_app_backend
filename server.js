@@ -67,7 +67,7 @@ app.use('/api/beneficiary', require('./routes/beneficiaryRoutes'));
 // Existing Routes
 app.use('/api/auth', authRoutes);
 // ========== DMT WEBHOOK LOGGING ==========
-app.use('/api/dmt/callback', (req, res, next) => {
+app.use('/api/payout/callback', (req, res, next) => {
 
   console.log('🔔 DMT CALLBACK HIT');
   console.log('Timestamp:', new Date().toISOString());
