@@ -408,5 +408,6 @@ async function refundFailedTransaction(userId, amount, remitterId) {
 module.exports = {
   processDmtTransfer,
   refundFailedTransaction,
-  rollbackFailedTransfer
+  rollbackFailedTransfer,
+  logProviderCall
 };

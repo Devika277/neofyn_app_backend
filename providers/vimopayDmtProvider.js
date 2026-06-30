@@ -78,6 +78,220 @@ async function getAuthToken() {
 
 /**
  * Send DMT transfer using the same endpoint as payout
+ */
+// async function sendDmtTransfer(params) {
+//   const { merchantRefId, amount, mode, remitter, beneficiary, lat, long } = params;
+
+//   const BASE_URL = process.env.PAYOUT_BASE_URL;
+//   const USER_ID = process.env.PAYOUT_USER_ID;
+
+//   console.log('[VimoPay DMT] Starting transfer', { merchantRefId, amount, mode });
+
+//   const token = await getAuthToken();
+
+//   const validBankCode = beneficiary.bankCode || '001';
+  
+//   // Clean beneficiary name - remove special characters, keep only alphabets and spaces
+//   const cleanName = (name) => {
+//     if (!name) return '';
+//     let cleaned = name.replace(/[^a-zA-Z\s]/g, '');
+//     cleaned = cleaned.replace(/\s+/g, ' ').trim();
+//     return cleaned.toUpperCase();
+//   };
+
+//   // Ensure IFSC is uppercase and valid format
+//   const cleanIFSC = (ifsc) => {
+//     const cleaned = ifsc.toUpperCase().trim();
+//     // Validate IFSC format: 4 letters, 0, 6 alphanumeric
+//     const ifscRegex = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+//     if (!ifscRegex.test(cleaned)) {
+//       console.warn('[VimoPay DMT] Invalid IFSC format:', ifsc, 'cleaned to:', cleaned);
+//     }
+//     return cleaned;
+//   };
+
+//   const cleanedName = cleanName(beneficiary.name);
+//   const cleanedIFSC = cleanIFSC(beneficiary.ifsc);
+  
+//   console.log('[VimoPay DMT] Cleaned beneficiary name:', cleanedName);
+//   console.log('[VimoPay DMT] Cleaned IFSC:', cleanedIFSC);
+
+//   const payload = {
+//     amount: parseFloat(amount),
+//     merchantRefId: String(merchantRefId).replace(/_/g, '-'),
+//     beneficiaryBank: validBankCode,
+//     paymentPurpose: '004',
+//     paymentMode: mode.toLowerCase(),
+//     beneficiaryAccountNumber: String(beneficiary.accountNumber),
+//     beneficiaryIFSC: cleanedIFSC,
+//     beneficiaryMobileNumber: String(beneficiary.mobile || remitter.mobile || '9999999999'),
+//     beneficiaryName: cleanedName,
+//     beneficiaryLocation: beneficiary.location || 'MH',
+//     // lat: String(lat !== undefined && lat !== null ? lat : '0.0'),
+//     // long: String(long !== undefined && long !== null ? long : '0.0'),
+//     // lat: "10.8505",
+// // long: "76.2711",
+// lat: String(lat && lat !== '0.0' && lat !== 0 ? lat : (stateCoordinates[beneficiary.location]?.lat || '20.5937')),
+// long: String(long && long !== '0.0' && long !== 0 ? long : (stateCoordinates[beneficiary.location]?.long || '78.9629')),
+//     udf1: '',
+//     udf2: '',
+//     udf3: '',
+//     remitterMobile: String(remitter.mobile),
+//     remitterName: cleanName(remitter.name)
+//   };
+// console.log("LOCATION DEBUG RAW:", beneficiary.location);
+// console.log("BENEFICIARY OBJECT:", beneficiary);
+//   console.log('[VimoPay DMT] Sending payload:', JSON.stringify(payload, null, 2));
+
+//   const encryptedBody = encrypt(JSON.stringify(payload));
+//   console.log('[VimoPay DMT] Encrypted body (first 50 chars):', encryptedBody.slice(0, 50) + '...');
+
+//   const endpoint = `${BASE_URL}/payoutapi/api/Payment/payout`;
+//   console.log('[VimoPay DMT] Calling endpoint:', endpoint);
+
+//   try {
+//     const response = await axios.post(
+//       endpoint,
+//       { requestBody: encryptedBody },
+//       {
+//         headers: {
+//           Authorization: `Bearer ${token}`,
+//           userId: USER_ID,
+//           'Content-Type': 'application/json'
+//         },
+//         timeout: 15000
+//       }
+//     );
+
+//     console.log('[VimoPay DMT] Response status:', response.status);
+//     console.log('[VimoPay DMT] Raw response:', JSON.stringify(response.data, null, 2));
+
+//     const responseData = response.data;
+
+//     // ALWAYS decrypt the data field to get the actual response
+//     let decrypted = null;
+//     let data = null;
+    
+//     if (responseData.data) {
+//       try {
+//         decrypted = decrypt(responseData.data);
+//         console.log('[VimoPay DMT] Decrypted response:', decrypted);
+        
+//         try {
+//           data = JSON.parse(decrypted);
+//           console.log('[VimoPay DMT] Parsed data:', data);
+//         } catch (e) {
+//           console.warn('[VimoPay DMT] Decrypted response is not JSON, using as string');
+//           data = { responseMessage: decrypted };
+//         }
+//       } catch (e) {
+//         console.error('[VimoPay DMT] Decryption failed:', e.message);
+//         try {
+//           data = JSON.parse(responseData.data);
+//         } catch (e2) {
+//           data = { responseMessage: responseData.data };
+//         }
+//       }
+//     }
+
+//     // Handle failure with decrypted error message
+//     if (!responseData || !responseData.successStatus) {
+//       console.error('[VimoPay DMT] Transfer failed:', {
+//         responseCode: responseData?.responseCode,
+//         message: responseData?.message,
+//         decryptedData: data,
+//         rawData: responseData?.data
+//       });
+      
+//       let errorMessage = responseData?.message || 'VimoPay DMT API rejected request';
+      
+//       // Extract detailed error messages from the decrypted data
+//       if (Array.isArray(data)) {
+//         const errors = data.map(err => err.ErrorMessage).join('; ');
+//         errorMessage = errors || errorMessage;
+//       } else if (data?.ErrorMessage) {
+//         errorMessage = data.ErrorMessage;
+//       } else if (data?.responseMessage) {
+//         errorMessage = data.responseMessage;
+//       } else if (data?.message) {
+//         errorMessage = data.message;
+//       }
+      
+//       return {
+//         status: responseData?.responseCode || '001',
+//         providerRefId: data?.txnId || data?.transactionId || null,
+//         utr: null,   // ✅ UTR added
+//         message: errorMessage,
+//         rawError: data
+//       };
+//     }
+
+//     // Success case - use decrypted data
+//     const dataField = responseData.data;
+//     if (!dataField) {
+//       return {
+//         status: 'pending',
+//         providerRefId: null,
+//         utr: null,   // ✅ UTR added
+//         message: 'Queued — awaiting callback'
+//       };
+//     }
+
+//     // If we don't have data yet, try one more time
+//     if (!data) {
+//       try {
+//         const decrypted2 = decrypt(dataField);
+//         data = JSON.parse(decrypted2);
+//         console.log('[VimoPay DMT] Decrypted success data:', data);
+//       } catch (e) {
+//         console.warn('[VimoPay DMT] Could not parse success data');
+//         data = {};
+//       }
+//     }
+
+//     const code = data?.txnStatusCode || data?.responseCode || data?.status;
+//     console.log('[VimoPay DMT] Transaction status code:', code);
+
+//     if (code === '000' || code === '00' || code === 'SUCCESS') {
+//       const utr = data.rrn || data.transactionId || data.txnId || null;   // ✅ Extract UTR
+//       console.log('[VimoPay DMT] Captured UTR:', utr);
+//       return {
+//         status: '000',
+//         providerRefId: data.txnId || data.transactionId || data.providerRefId,
+//         utr: utr,   // ✅ UTR included
+//         message: data.responseMessage || data.message || 'Success'
+//       };
+//     } else if (code === '004' || code === '04' || code === 'PENDING') {
+//       return {
+//         status: '004',
+//         providerRefId: data.txnId || data.transactionId || null,
+//         utr: null,   // ✅ UTR added
+//         message: 'Queued'
+//       };
+//     } else {
+//       const errorMsg = data.responseMessage || data.message || data.error || 'Transaction failed';
+//       console.warn('[VimoPay DMT] Transaction failed with code:', code, 'Message:', errorMsg);
+//       return {
+//         status: code || '001',
+//         providerRefId: data?.txnId || null,
+//         utr: null,   // ✅ UTR added
+//         message: errorMsg,
+//         rawError: data
+//       };
+//     }
+//   } catch (error) {
+//     console.error('[VimoPay DMT] Transfer error:', error.message);
+//     if (error.response) {
+//       console.error('[VimoPay DMT] Error response:', JSON.stringify(error.response.data, null, 2));
+//     }
+//     throw new Error(`VimoPay DMT transfer failed: ${error.message}`);
+//   }
+// }
+
+
+
+/**
+ * Send DMT transfer using the same endpoint as payout
  * @param {Object} params - { merchantRefId, amount, mode, remitter, beneficiary }
  */
 async function sendDmtTransfer(params) {
@@ -90,8 +304,91 @@ async function sendDmtTransfer(params) {
 
   const token = await getAuthToken();
 
-  const validBankCode = beneficiary.bankCode || '001';
+  // ✅ FIX: Get correct bank code from bank list
+  let validBankCode = beneficiary.bankCode;
   
+  // If bankCode is null, undefined, or '001' (default), try to find correct one
+  if (!validBankCode || validBankCode === '001' || validBankCode === 'null' || validBankCode === 'undefined') {
+    console.log('[VimoPay DMT] 🔍 Looking up correct bank code for IFSC:', beneficiary.ifsc);
+    
+    try {
+      // Fetch bank list
+      const bankList = await getBankList();
+      console.log('[VimoPay DMT] 📋 Bank list fetched, total banks:', bankList.length);
+      
+      let matchedBank = null;
+      
+      // Strategy 1: Match by IFSC prefix (first 4 characters)
+      if (beneficiary.ifsc) {
+        const ifscPrefix = beneficiary.ifsc.substring(0, 4).toUpperCase();
+        console.log('[VimoPay DMT] 🔍 Searching by IFSC prefix:', ifscPrefix);
+        
+        matchedBank = bankList.find(bank => {
+          const bankIfsc = (bank.ifsc || '').substring(0, 4).toUpperCase();
+          return bankIfsc === ifscPrefix;
+        });
+        
+        if (matchedBank) {
+          console.log('[VimoPay DMT] ✅ Found bank by IFSC prefix:', {
+            code: matchedBank.bankCode || matchedBank.code,
+            name: matchedBank.bankName || matchedBank.name
+          });
+        }
+      }
+      
+      // Strategy 2: Match by bank name (if not found by IFSC)
+      if (!matchedBank && beneficiary.bankName) {
+        const searchName = beneficiary.bankName.toUpperCase();
+        console.log('[VimoPay DMT] 🔍 Searching by bank name:', searchName);
+        
+        matchedBank = bankList.find(bank => {
+          const bankName = (bank.bankName || bank.name || '').toUpperCase();
+          return bankName.includes(searchName) || searchName.includes(bankName);
+        });
+        
+        if (matchedBank) {
+          console.log('[VimoPay DMT] ✅ Found bank by name:', {
+            code: matchedBank.bankCode || matchedBank.code,
+            name: matchedBank.bankName || matchedBank.name
+          });
+        }
+      }
+      
+      // Strategy 3: Try to match by IFSC code completely (if not found by prefix)
+      if (!matchedBank && beneficiary.ifsc) {
+        const ifscFull = beneficiary.ifsc.toUpperCase();
+        console.log('[VimoPay DMT] 🔍 Searching by full IFSC:', ifscFull);
+        
+        matchedBank = bankList.find(bank => {
+          const bankIfsc = (bank.ifsc || '').toUpperCase();
+          return bankIfsc === ifscFull;
+        });
+        
+        if (matchedBank) {
+          console.log('[VimoPay DMT] ✅ Found bank by full IFSC:', {
+            code: matchedBank.bankCode || matchedBank.code,
+            name: matchedBank.bankName || matchedBank.name
+          });
+        }
+      }
+      
+      // If found, use the correct bank code
+      if (matchedBank) {
+        validBankCode = matchedBank.bankCode || matchedBank.code || matchedBank.bank_id;
+        console.log('[VimoPay DMT] ✅ Using bank code:', validBankCode);
+      } else {
+        console.warn('[VimoPay DMT] ⚠️ No matching bank found, using default: 001');
+        validBankCode = '001';
+      }
+      
+    } catch (error) {
+      console.error('[VimoPay DMT] ❌ Error fetching bank list:', error.message);
+      validBankCode = '001';
+    }
+  } else {
+    console.log('[VimoPay DMT] Using provided bank code:', validBankCode);
+  }
+
   // Clean beneficiary name - remove special characters, keep only alphabets and spaces
   const cleanName = (name) => {
     if (!name) return '';
@@ -103,7 +400,6 @@ async function sendDmtTransfer(params) {
   // Ensure IFSC is uppercase and valid format
   const cleanIFSC = (ifsc) => {
     const cleaned = ifsc.toUpperCase().trim();
-    // Validate IFSC format: 4 letters, 0, 6 alphanumeric
     const ifscRegex = /^[A-Z]{4}0[A-Z0-9]{6}$/;
     if (!ifscRegex.test(cleaned)) {
       console.warn('[VimoPay DMT] Invalid IFSC format:', ifsc, 'cleaned to:', cleaned);
@@ -120,7 +416,7 @@ async function sendDmtTransfer(params) {
   const payload = {
     amount: parseFloat(amount),
     merchantRefId: String(merchantRefId).replace(/_/g, '-'),
-    beneficiaryBank: validBankCode,
+    beneficiaryBank: validBankCode,  // ✅ Now using correct bank code
     paymentPurpose: '004',
     paymentMode: mode.toLowerCase(),
     beneficiaryAccountNumber: String(beneficiary.accountNumber),
@@ -128,20 +424,17 @@ async function sendDmtTransfer(params) {
     beneficiaryMobileNumber: String(beneficiary.mobile || remitter.mobile || '9999999999'),
     beneficiaryName: cleanedName,
     beneficiaryLocation: beneficiary.location || 'MH',
-    // lat: String(lat !== undefined && lat !== null ? lat : '0.0'),
-    // long: String(long !== undefined && long !== null ? long : '0.0'),
-    // lat: "10.8505",
-// long: "76.2711",
-lat: String(lat && lat !== '0.0' && lat !== 0 ? lat : (stateCoordinates[beneficiary.location]?.lat || '20.5937')),
-long: String(long && long !== '0.0' && long !== 0 ? long : (stateCoordinates[beneficiary.location]?.long || '78.9629')),
+    lat: String(lat && lat !== '0.0' && lat !== 0 ? lat : (stateCoordinates[beneficiary.location]?.lat || '20.5937')),
+    long: String(long && long !== '0.0' && long !== 0 ? long : (stateCoordinates[beneficiary.location]?.long || '78.9629')),
     udf1: '',
     udf2: '',
     udf3: '',
     remitterMobile: String(remitter.mobile),
     remitterName: cleanName(remitter.name)
   };
-console.log("LOCATION DEBUG RAW:", beneficiary.location);
-console.log("BENEFICIARY OBJECT:", beneficiary);
+
+  console.log("LOCATION DEBUG RAW:", beneficiary.location);
+  console.log("BENEFICIARY OBJECT:", beneficiary);
   console.log('[VimoPay DMT] Sending payload:', JSON.stringify(payload, null, 2));
 
   const encryptedBody = encrypt(JSON.stringify(payload));
@@ -206,7 +499,6 @@ console.log("BENEFICIARY OBJECT:", beneficiary);
       
       let errorMessage = responseData?.message || 'VimoPay DMT API rejected request';
       
-      // Extract detailed error messages from the decrypted data
       if (Array.isArray(data)) {
         const errors = data.map(err => err.ErrorMessage).join('; ');
         errorMessage = errors || errorMessage;
@@ -221,7 +513,7 @@ console.log("BENEFICIARY OBJECT:", beneficiary);
       return {
         status: responseData?.responseCode || '001',
         providerRefId: data?.txnId || data?.transactionId || null,
-        utr: null,   // ✅ UTR added
+        utr: null,
         message: errorMessage,
         rawError: data
       };
@@ -233,12 +525,11 @@ console.log("BENEFICIARY OBJECT:", beneficiary);
       return {
         status: 'pending',
         providerRefId: null,
-        utr: null,   // ✅ UTR added
+        utr: null,
         message: 'Queued — awaiting callback'
       };
     }
 
-    // If we don't have data yet, try one more time
     if (!data) {
       try {
         const decrypted2 = decrypt(dataField);
@@ -254,19 +545,19 @@ console.log("BENEFICIARY OBJECT:", beneficiary);
     console.log('[VimoPay DMT] Transaction status code:', code);
 
     if (code === '000' || code === '00' || code === 'SUCCESS') {
-      const utr = data.rrn || data.transactionId || data.txnId || null;   // ✅ Extract UTR
+      const utr = data.rrn || data.transactionId || data.txnId || null;
       console.log('[VimoPay DMT] Captured UTR:', utr);
       return {
         status: '000',
         providerRefId: data.txnId || data.transactionId || data.providerRefId,
-        utr: utr,   // ✅ UTR included
+        utr: utr,
         message: data.responseMessage || data.message || 'Success'
       };
     } else if (code === '004' || code === '04' || code === 'PENDING') {
       return {
         status: '004',
         providerRefId: data.txnId || data.transactionId || null,
-        utr: null,   // ✅ UTR added
+        utr: null,
         message: 'Queued'
       };
     } else {
@@ -275,7 +566,7 @@ console.log("BENEFICIARY OBJECT:", beneficiary);
       return {
         status: code || '001',
         providerRefId: data?.txnId || null,
-        utr: null,   // ✅ UTR added
+        utr: null,
         message: errorMsg,
         rawError: data
       };
@@ -288,6 +579,12 @@ console.log("BENEFICIARY OBJECT:", beneficiary);
     throw new Error(`VimoPay DMT transfer failed: ${error.message}`);
   }
 }
+
+
+
+
+
+
 
 async function getStateList() {
   if (cachedStateList && stateListExpiry && Date.now() < stateListExpiry) {

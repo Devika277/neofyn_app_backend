@@ -11,6 +11,8 @@ const { requirePermission } = require('../middleware/permissionMiddleware');
 
 // Webhook – VimoPay posts directly
 router.post('/callback', dmtController.dmtWebhook);
+// router.post('/webhook', dmtController.dmtWebhook);
+
 
 // ============================================================
 // PROTECTED ROUTES (Authentication required)
