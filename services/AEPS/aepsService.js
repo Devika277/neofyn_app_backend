@@ -110,8 +110,8 @@ const registerMerchant = async (userId, data) => {
   const merchantRefId = customRefId || `NEO_${userId}_${Date.now()}`;
 
   try {
-    if (!pipe || !['1', '2', '3'].includes(pipe)) {
-      throw new Error('Valid pipe (1, 2, or 3) is required');
+    if (!pipe || !['1', '2', '3', '4'].includes(pipe)) {
+      throw new Error('Valid pipe (1, 2, 3, or 4) is required');
     }
     
     const existing = await db.query(
@@ -258,7 +258,7 @@ const sendOTP = async (userId, pipe, { merchantId, merchantRefId }) => {
   const startTime = Date.now();
   let logId = null;
   try {
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       throw new Error('Invalid pipe value');
     }
     
@@ -299,7 +299,7 @@ const resendOTP = async (userId, pipe, { merchantId, merchantRefId }) => {
   const startTime = Date.now();
   let logId = null;
   try {
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       throw new Error('Invalid pipe value');
     }
     
@@ -335,7 +335,7 @@ const verifyOTP = async (userId, pipe, { merchantId, merchantRefId, otp }) => {
   const startTime = Date.now();
   let logId = null;
   try {
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       throw new Error('Invalid pipe value');
     }
     
@@ -387,7 +387,7 @@ const performEkyc = async (userId, pipe, { merchantId, merchantRefId, pidData, d
   const startTime = Date.now();
   let logId = null;
   try {
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       throw new Error('Invalid pipe value');
     }
     
@@ -445,8 +445,8 @@ const perform2FA = async (userId, pipe, params) => {
   let logId = null;
 
   try {
-    if (!['1', '2', '3'].includes(pipe)) {
-      throw new Error('Invalid pipe value. Must be "1", "2", or "3".');
+    if (!['1', '2', '3', '4'].includes(pipe)) {
+      throw new Error('Invalid pipe value. Must be "1", "2", "3", or "4".');
     }
 
     const { merchantId, merchantRefId, aadhaarNumber, deviceType, pidData, lat, long, ipAddress } = params;
@@ -573,7 +573,7 @@ const perform2FA = async (userId, pipe, params) => {
 // AePS Transactions (pipe‑aware + 2FA gate)
 // ==============================
 const getMerchantInfo = async (userId, pipe, client = db) => {
-  if (!['1', '2', '3'].includes(pipe)) {
+  if (!['1', '2', '3', '4'].includes(pipe)) {
     throw new Error('Invalid pipe value');
   }
   
@@ -590,7 +590,7 @@ const getMerchantInfo = async (userId, pipe, client = db) => {
 };
 
 const check2FAGate = async (userId, pipe) => {
-  if (!['1', '2', '3'].includes(pipe)) {
+  if (!['1', '2', '3', '4'].includes(pipe)) {
     throw new Error('Invalid pipe value');
   }
   
@@ -605,9 +605,30 @@ const check2FAGate = async (userId, pipe) => {
   }
 };
 
+
+
+
+// ===== Helper: Clean numeric values (remove commas, currency symbols, etc.) =====
+function cleanNumericValue(value) {
+    if (!value) return 0;
+    
+    // If it's already a number, return it
+    if (typeof value === 'number') return value;
+    
+    // Convert to string and clean
+    const cleaned = String(value)
+        .replace(/,/g, '')           // Remove commas
+        .replace(/[^\d.-]/g, '')     // Remove non-numeric characters (keep . and -)
+        .trim();
+    
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) ? 0 : parsed;
+}
+
+
 // Cash Withdrawal
 const cashWithdrawal = async (userId, pipe, { amount, bankCode, pidData, accountType, lat, long, device, aadhaarNo, mobileNo, ipAddress }) => {
-  if (!['1', '2', '3'].includes(pipe)) {
+  if (!['1', '2', '3', '4'].includes(pipe)) {
     throw new Error('Invalid pipe value');
   }
   
@@ -632,10 +653,10 @@ const cashWithdrawal = async (userId, pipe, { amount, bankCode, pidData, account
 
     const txnInsert = await client.query(
       `INSERT INTO aeps_transactions 
-         (user_id, aeps_wallet_id, txn_type, amount, status, provider, device_used, pipe, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) RETURNING id`,
-      [userId, wallet.id, 'cash_withdrawal', amount, 'pending', process.env.AEPS_PROVIDER || 'vimopay', device, pipe]
-    );
+         (user_id, aeps_wallet_id, txn_type, amount, status, provider, device_used, pipe, device_type, created_at)
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()) RETURNING id`,
+      [userId, wallet.id, 'cash_withdrawal', amount, 'pending', process.env.AEPS_PROVIDER || 'vimopay', device, pipe, 'app']
+)
     const txnId = txnInsert.rows[0].id;
 
     const requestPayload = { amount, bankCode, accountType, lat, long, device, aadhaarNo, mobileNo, pipe: merchantInfo.pipe, merchantId: merchantInfo.merchantId, ipAddress };
@@ -654,26 +675,29 @@ const cashWithdrawal = async (userId, pipe, { amount, bankCode, pidData, account
       ipAddress: ipAddress || '127.0.0.1',
     });
 
-    await client.query(
-      `UPDATE aeps_transactions 
-       SET rrn=$1, provider_txn_ref=$2, npci_code=$3, npci_message=$4,
-           bank_iin=$5, bank_name=$6, aadhaar_last4=$7,
-           available_balance=$8, status=$9, raw_response=$10, updated_at=NOW()
-       WHERE id=$11`,
-      [
-        providerResult.rrn || null,
-        providerResult.txnRefId || null,
-        providerResult.npciCode || null,
-        providerResult.npciMessage || null,
-        providerResult.bankIIN || null,
-        providerResult.bankName || null,
-        providerResult.aadhaarNo ? providerResult.aadhaarNo.slice(-4) : null,
-        providerResult.availableBalance || null,
-        providerResult.status === '000' ? 'success' : 'failed',
-        JSON.stringify(providerResult),
-        txnId,
-      ]
-    );
+  // ✅ Clean the numeric value before inserting
+  const cleanedBalance = cleanNumericValue(providerResult.availableBalance);
+  
+  await client.query(
+    `UPDATE aeps_transactions 
+     SET rrn=$1, provider_txn_ref=$2, npci_code=$3, npci_message=$4,
+         bank_iin=$5, bank_name=$6, aadhaar_last4=$7,
+         available_balance=$8, status=$9, raw_response=$10, updated_at=NOW()
+     WHERE id=$11`,
+    [
+      providerResult.rrn || null,
+      providerResult.txnRefId || null,
+      providerResult.npciCode || null,
+      providerResult.npciMessage || null,
+      providerResult.bankIIN || null,
+      providerResult.bankName || null,
+      providerResult.aadhaarNo ? providerResult.aadhaarNo.slice(-4) : null,
+      cleanedBalance,  // ✅ CLEANED - no comma
+      providerResult.status === '000' ? 'success' : 'failed',
+      JSON.stringify(providerResult),
+      txnId,
+    ]
+  );
 
     await updateLog(client, logId, JSON.stringify(providerResult), Date.now() - startTime,
       providerResult.status === '000' ? 'success' : 'failed', 200, null);
@@ -711,7 +735,7 @@ const cashWithdrawal = async (userId, pipe, { amount, bankCode, pidData, account
 
 // Cash Deposit
 const cashDeposit = async (userId, pipe, { amount, bankCode, pidData, accountType, lat, long, device, aadhaarNo, mobileNo, ipAddress }) => {
-  if (!['1', '2', '3'].includes(pipe)) {
+  if (!['1', '2', '3', '4'].includes(pipe)) {
     throw new Error('Invalid pipe value');
   }
   
@@ -736,9 +760,9 @@ const cashDeposit = async (userId, pipe, { amount, bankCode, pidData, accountTyp
 
     const txnInsert = await client.query(
       `INSERT INTO aeps_transactions 
-         (user_id, aeps_wallet_id, txn_type, amount, status, provider, device_used, pipe, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) RETURNING id`,
-      [userId, wallet.id, 'cash_deposit', amount, 'pending', process.env.AEPS_PROVIDER || 'vimopay', device, pipe]
+         (user_id, aeps_wallet_id, txn_type, amount, status, provider, device_used, pipe, device_type, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()) RETURNING id`,
+      [userId, wallet.id, 'cash_deposit', amount, 'pending', process.env.AEPS_PROVIDER || 'vimopay', device, pipe, 'app']
     );
     const txnId = txnInsert.rows[0].id;
 
@@ -758,27 +782,30 @@ const cashDeposit = async (userId, pipe, { amount, bankCode, pidData, accountTyp
       ipAddress: ipAddress || '127.0.0.1',
     });
 
-    await client.query(
-      `UPDATE aeps_transactions 
-       SET rrn=$1, provider_txn_ref=$2, npci_code=$3, npci_message=$4,
-           bank_iin=$5, bank_name=$6, aadhaar_last4=$7,
-           available_balance=$8, status=$9, raw_response=$10, updated_at=NOW()
-       WHERE id=$11`,
-      [
-        providerResult.rrn || null,
-        providerResult.txnRefId || null,
-        providerResult.npciCode || null,
-        providerResult.npciMessage || null,
-        providerResult.bankIIN || null,
-        providerResult.bankName || null,
-        providerResult.aadhaarNo ? providerResult.aadhaarNo.slice(-4) : null,
-        providerResult.availableBalance || null,
-        providerResult.status === '000' ? 'success' : 'failed',
-        JSON.stringify(providerResult),
-        txnId,
-      ]
-    );
-
+  // ✅ Clean the numeric value before inserting
+  const cleanedBalance = cleanNumericValue(providerResult.availableBalance);
+  
+  await client.query(
+    `UPDATE aeps_transactions 
+     SET rrn=$1, provider_txn_ref=$2, npci_code=$3, npci_message=$4,
+         bank_iin=$5, bank_name=$6, aadhaar_last4=$7,
+         available_balance=$8, status=$9, raw_response=$10, updated_at=NOW()
+     WHERE id=$11`,
+    [
+      providerResult.rrn || null,
+      providerResult.txnRefId || null,
+      providerResult.npciCode || null,
+      providerResult.npciMessage || null,
+      providerResult.bankIIN || null,
+      providerResult.bankName || null,
+      providerResult.aadhaarNo ? providerResult.aadhaarNo.slice(-4) : null,
+      cleanedBalance,  // ✅ CLEANED - no comma
+      providerResult.status === '000' ? 'success' : 'failed',
+      JSON.stringify(providerResult),
+      txnId,
+    ]
+  );
+  
     await updateLog(client, logId, JSON.stringify(providerResult), Date.now() - startTime,
       providerResult.status === '000' ? 'success' : 'failed', 200, null);
 
@@ -815,7 +842,7 @@ const cashDeposit = async (userId, pipe, { amount, bankCode, pidData, accountTyp
 
 // Balance Enquiry
 const balanceEnquiry = async (userId, pipe, { bankCode, pidData, accountType, device, aadhaarNo, mobileNo, lat, long, ipAddress }) => {
-  if (!['1', '2', '3'].includes(pipe)) {
+  if (!['1', '2', '3', '4'].includes(pipe)) {
     throw new Error('Invalid pipe value');
   }
   
@@ -835,9 +862,9 @@ const balanceEnquiry = async (userId, pipe, { bankCode, pidData, accountType, de
 
     const txnInsert = await db.query(
       `INSERT INTO aeps_transactions 
-         (user_id, aeps_wallet_id, txn_type, status, provider, device_used, pipe, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) RETURNING id`,
-      [userId, walletId, 'balance_enquiry', 'pending', process.env.AEPS_PROVIDER || 'vimopay', device, pipe]
+         (user_id, aeps_wallet_id, txn_type, status, provider, device_used, pipe, device_type, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) RETURNING id`,
+      [userId, walletId, 'balance_enquiry', 'pending', process.env.AEPS_PROVIDER || 'vimopay', device, pipe, 'app']
     );
     const txnId = txnInsert.rows[0].id;
 
@@ -859,26 +886,29 @@ const balanceEnquiry = async (userId, pipe, { bankCode, pidData, accountType, de
       ipAddress: ipAddress || '127.0.0.1',
     });
 
-    await db.query(
-      `UPDATE aeps_transactions 
-       SET rrn=$1, provider_txn_ref=$2, npci_code=$3, npci_message=$4,
-           bank_iin=$5, bank_name=$6, aadhaar_last4=$7,
-           available_balance=$8, status=$9, raw_response=$10, updated_at=NOW()
-       WHERE id=$11`,
-      [
-        providerResult.rrn || null,
-        providerResult.txnRefId || null,
-        providerResult.npciCode || null,
-        providerResult.npciMessage || null,
-        providerResult.bankIIN || null,
-        providerResult.bankName || null,
-        providerResult.aadhaarNo ? providerResult.aadhaarNo.slice(-4) : null,
-        providerResult.availableBalance || null,
-        providerResult.status === '000' ? 'success' : 'failed',
-        JSON.stringify(providerResult),
-        txnId,
-      ]
-    );
+      // ✅ Clean the numeric value before inserting
+   const cleanedBalance = cleanNumericValue(providerResult.availableBalance);
+   
+  await db.query(
+    `UPDATE aeps_transactions 
+     SET rrn=$1, provider_txn_ref=$2, npci_code=$3, npci_message=$4,
+         bank_iin=$5, bank_name=$6, aadhaar_last4=$7,
+         available_balance=$8, status=$9, raw_response=$10, updated_at=NOW()
+     WHERE id=$11`,
+    [
+      providerResult.rrn || null,
+      providerResult.txnRefId || null,
+      providerResult.npciCode || null,
+      providerResult.npciMessage || null,
+      providerResult.bankIIN || null,
+      providerResult.bankName || null,
+      providerResult.aadhaarNo ? providerResult.aadhaarNo.slice(-4) : null,
+      cleanedBalance,  // ✅ CLEANED - no comma
+      providerResult.status === '000' ? 'success' : 'failed',
+      JSON.stringify(providerResult),
+      txnId,
+    ]
+  );
 
     await updateLog(db, logId, JSON.stringify(providerResult), Date.now() - startTime,
       providerResult.status === '000' ? 'success' : 'failed', 200, null);
@@ -896,7 +926,7 @@ const balanceEnquiry = async (userId, pipe, { bankCode, pidData, accountType, de
 
 // Mini Statement
 const miniStatement = async (userId, pipe, { bankCode, pidData, accountType, device, aadhaarNo, mobileNo, lat, long, ipAddress }) => {
-  if (!['1', '2', '3'].includes(pipe)) {
+  if (!['1', '2', '3', '4'].includes(pipe)) {
     throw new Error('Invalid pipe value');
   }
   
@@ -916,9 +946,9 @@ const miniStatement = async (userId, pipe, { bankCode, pidData, accountType, dev
 
     const txnInsert = await db.query(
       `INSERT INTO aeps_transactions 
-         (user_id, aeps_wallet_id, txn_type, status, provider, device_used, pipe, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) RETURNING id`,
-      [userId, walletId, 'mini_statement', 'pending', process.env.AEPS_PROVIDER || 'vimopay', device, pipe]
+         (user_id, aeps_wallet_id, txn_type, status, provider, device_used, pipe, device_type, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) RETURNING id`,
+      [userId, walletId, 'mini_statement', 'pending', process.env.AEPS_PROVIDER || 'vimopay', device, pipe, 'app']
     );
     const txnId = txnInsert.rows[0].id;
 
@@ -940,28 +970,31 @@ const miniStatement = async (userId, pipe, { bankCode, pidData, accountType, dev
       ipAddress: ipAddress || '127.0.0.1',
     });
 
-    await db.query(
-      `UPDATE aeps_transactions 
-       SET rrn=$1, provider_txn_ref=$2, npci_code=$3, npci_message=$4,
-           bank_iin=$5, bank_name=$6, aadhaar_last4=$7,
-           mini_statement=$8, available_balance=$9,
-           status=$10, raw_response=$11, updated_at=NOW()
-       WHERE id=$12`,
-      [
-        providerResult.rrn || null,
-        providerResult.txnRefId || null,
-        providerResult.npciCode || null,
-        providerResult.npciMessage || null,
-        providerResult.bankIIN || null,
-        providerResult.bankName || null,
-        providerResult.aadhaarNo ? providerResult.aadhaarNo.slice(-4) : null,
-        JSON.stringify(providerResult.transactionList || []),
-        providerResult.availableBalance || null,
-        providerResult.status === '000' ? 'success' : 'failed',
-        JSON.stringify(providerResult),
-        txnId,
-      ]
-    );
+    // ✅ Clean the numeric value before inserting
+  const cleanedBalance = cleanNumericValue(providerResult.availableBalance);
+  
+  await db.query(
+    `UPDATE aeps_transactions 
+     SET rrn=$1, provider_txn_ref=$2, npci_code=$3, npci_message=$4,
+         bank_iin=$5, bank_name=$6, aadhaar_last4=$7,
+         mini_statement=$8, available_balance=$9,
+         status=$10, raw_response=$11, updated_at=NOW()
+     WHERE id=$12`,
+    [
+      providerResult.rrn || null,
+      providerResult.txnRefId || null,
+      providerResult.npciCode || null,
+      providerResult.npciMessage || null,
+      providerResult.bankIIN || null,
+      providerResult.bankName || null,
+      providerResult.aadhaarNo ? providerResult.aadhaarNo.slice(-4) : null,
+      JSON.stringify(providerResult.transactionList || []),
+      cleanedBalance,  // ✅ CLEANED - no comma
+      providerResult.status === '000' ? 'success' : 'failed',
+      JSON.stringify(providerResult),
+      txnId,
+    ]
+  );
 
     await updateLog(db, logId, JSON.stringify(providerResult), Date.now() - startTime,
       providerResult.status === '000' ? 'success' : 'failed', 200, null);
@@ -991,7 +1024,7 @@ const getUserTransactions = async (userId, pipe = null) => {
     `;
     const params = [userId];
     if (pipe) {
-      if (!['1', '2', '3'].includes(pipe)) {
+      if (!['1', '2', '3', '4'].includes(pipe)) {
         throw new Error('Invalid pipe value');
       }
       query += ` AND pipe = $2`;
@@ -1141,8 +1174,8 @@ const getMerchantProfile = async (userId) => {
 // Get merchant profile by specific pipe
 const getMerchantProfileByPipe = async (userId, pipe) => {
   try {
-    if (!['1', '2', '3'].includes(pipe)) {
-      throw new Error('Invalid pipe value. Must be "1", "2", or "3".');
+    if (!['1', '2', '3', '4'].includes(pipe)) {
+      throw new Error('Invalid pipe value. Must be "1", "2", "3", or "4".');
     }
     
     const result = await db.query(
@@ -1217,6 +1250,154 @@ const maskAccount = (account) => {
   }
   return str;
 };
+// =====================================================
+// 2FA STATUS - Check if 2FA is done today
+// =====================================================
+/**
+ * Check if 2FA is completed today for a user
+ * @param {string|number} userId - User ID
+ * @returns {Promise<Object>} 2FA status
+ */
+
+const check2FAStatus = async (userId) => {
+    try {
+        console.log(`[AEPS Service] Checking 2FA status for user ${userId}`);
+        
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        // ✅ Get ALL merchants for this user (REMOVED LIMIT 1)
+        const { rows } = await db.query(
+            `SELECT 
+                last_2fa_at,
+                registration_status,
+                merchant_id,
+                pipe
+             FROM aeps_merchants 
+             WHERE user_id = $1
+             ORDER BY pipe ASC`,
+            [userId]
+        );
+        
+        // Initialize pipes with default values
+        const pipes = {
+            '1': { merchant_id: null, last_2fa_at: null, is2FADoneToday: false },
+            '2': { merchant_id: null, last_2fa_at: null, is2FADoneToday: false },
+            '3': { merchant_id: null, last_2fa_at: null, is2FADoneToday: false },
+            '4': { merchant_id: null, last_2fa_at: null, is2FADoneToday: false },
+        };
+        
+        let any2FADoneToday = false;
+        
+        // Process each merchant
+        for (const merchant of rows) {
+            const pipe = merchant.pipe;
+            if (pipes[pipe]) {
+                let isDoneToday = false;
+                if (merchant.last_2fa_at) {
+                    const lastDate = new Date(merchant.last_2fa_at);
+                    lastDate.setHours(0, 0, 0, 0);
+                    isDoneToday = lastDate.getTime() === today.getTime();
+                }
+                
+                pipes[pipe] = {
+                    merchant_id: merchant.merchant_id,
+                    last_2fa_at: merchant.last_2fa_at,
+                    is2FADoneToday: isDoneToday,
+                };
+                
+                if (isDoneToday) {
+                    any2FADoneToday = true;
+                }
+            }
+        }
+        
+        console.log(`[AEPS Service] 2FA Status for user ${userId}:`, {
+            any2FADoneToday,
+            pipes: {
+                '1': pipes['1'].is2FADoneToday,
+                '2': pipes['2'].is2FADoneToday,
+                '3': pipes['3'].is2FADoneToday,
+                '4': pipes['4'].is2FADoneToday,
+            }
+        });
+        
+        return {
+            success: true,
+            data: {
+                pipes: pipes,
+                any2FADoneToday: any2FADoneToday,
+            }
+        };
+        
+    } catch (error) {
+        console.error('[AEPS Service] check2FAStatus error:', error.message);
+        throw error;
+    }
+};
+
+// const check2FAStatus = async (userId) => {
+//     try {
+//         console.log(`[AEPS Service] Checking 2FA status for user ${userId}`);
+        
+//         // Check if 2FA was completed today
+//         const today = new Date();
+//         today.setHours(0, 0, 0, 0);
+        
+//         const { rows } = await db.query(
+//             `SELECT 
+//                 last_2fa_at,
+//                 registration_status,
+//                 merchant_id,
+//                 pipe
+//              FROM aeps_merchants 
+//              WHERE user_id = $1
+//              ORDER BY created_at DESC
+//              LIMIT 1`,
+//             [userId]
+//         );
+        
+//         if (rows.length === 0) {
+//             // No merchant found - 2FA not set up
+//             return {
+//                 success: true,
+//                 isEnabled: false,
+//                 isVerified: false,
+//                 isVerifiedToday: false,
+//                 requires2FA: false,
+//                 lastVerifiedAt: null,
+//                 message: '2FA not configured for this user'
+//             };
+//         }
+        
+//         const merchant = rows[0];
+//         const lastVerified = merchant.last_2fa_at;
+        
+//         let isVerifiedToday = false;
+//         if (lastVerified) {
+//             const lastDate = new Date(lastVerified);
+//             lastDate.setHours(0, 0, 0, 0);
+//             isVerifiedToday = lastDate.getTime() === today.getTime();
+//         }
+        
+//         return {
+//             success: true,
+//             isEnabled: true,
+//             isVerified: isVerifiedToday,
+//             isVerifiedToday: isVerifiedToday,
+//             requires2FA: true,
+//             lastVerifiedAt: lastVerified,
+//             merchantId: merchant.merchant_id,
+//             pipe: merchant.pipe,
+//             registrationStatus: merchant.registration_status,
+//             message: isVerifiedToday ? '2FA verified today' : '2FA not verified today'
+//         };
+        
+//     } catch (error) {
+//         console.error('[AEPS Service] check2FAStatus error:', error.message);
+//         throw error;
+//     }
+// };
 
 
 
@@ -1240,5 +1421,6 @@ module.exports = {
   getAllTransactions,
   getAllMerchants,
   getMerchantProfile,
+  check2FAStatus,
   getMerchantProfileByPipe,
 };

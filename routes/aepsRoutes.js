@@ -114,10 +114,10 @@ router.post('/merchant/register', authenticate, async (req, res) => {
     }
 
     // Validate Pipe
-    if (!pipe || !['1', '2', '3'].includes(pipe)) {
+    if (!pipe || !['1', '2', '3', '4'].includes(pipe)) {
       return res.status(400).json({ 
         success: false, 
-        message: 'Valid pipe (1, 2, or 3) is required' 
+        message: 'Valid pipe (1, 2, 3, or 4) is required' 
       });
     }
 
@@ -240,7 +240,7 @@ router.post('/merchant/send-otp', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'merchantId and merchantRefId required' });
     }
     pipe = pipe || '2';
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       return res.status(400).json({ success: false, message: 'Invalid pipe value' });
     }
     const result = await aepsService.sendOTP(req.user.id, pipe, { merchantId, merchantRefId });
@@ -258,7 +258,7 @@ router.post('/merchant/resend-otp', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'merchantId and merchantRefId required' });
     }
     pipe = pipe || '2';
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       return res.status(400).json({ success: false, message: 'Invalid pipe value' });
     }
     const result = await aepsService.resendOTP(req.user.id, pipe, { merchantId, merchantRefId });
@@ -276,7 +276,7 @@ router.post('/merchant/verify-otp', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'merchantId, merchantRefId, and otp required' });
     }
     pipe = pipe || '2';
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       return res.status(400).json({ success: false, message: 'Invalid pipe value' });
     }
     const result = await aepsService.verifyOTP(req.user.id, pipe, { merchantId, merchantRefId, otp });
@@ -295,7 +295,7 @@ router.post('/merchant/ekyc', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'merchantId, merchantRefId, and pidData required' });
     }
     pipe = pipe || '2';
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       return res.status(400).json({ success: false, message: 'Invalid pipe value' });
     }
     const result = await aepsService.performEkyc(req.user.id, pipe, {
@@ -313,136 +313,8 @@ router.post('/merchant/ekyc', authenticate, async (req, res) => {
   }
 });
 
-// ============================================================
-// Daily 2FA Route
-// ============================================================
-// backend/routes/aepsRoutes.js
+router.get('/2fa/status/:userId', authenticate, aepsController.check2FAStatus);
 
-// ============================================================
-// ✅ ADD THIS ROUTE - For 2FA (matches Flutter app's expected endpoint)
-// ============================================================
-// router.post('/aepsapi/api/payment/merchant2FAPipe', authenticate, async (req, res) => {
-//   console.log('[AEPS Route] ════════════════════════════════════════════');
-//   console.log('[AEPS Route] 🔵 POST /aepsapi/api/payment/merchant2FAPipe');
-//   console.log('[AEPS Route] 🔵 User ID:', req.user?.id);
-//   console.log('[AEPS Route] 🔵 Request body:', JSON.stringify(req.body, null, 2));
-
-//   try {
-//     let { 
-//       merchantId, 
-//       merchantRefId, 
-//       aadhaarNumber, 
-//       pipe, 
-//       deviceType, 
-//       pidData, 
-//       lat, 
-//       long 
-//     } = req.body;
-
-//     // Validate required fields
-//     if (!merchantId || !merchantRefId || !aadhaarNumber || !pidData) {
-//       console.log('[AEPS Route] ❌ Missing required fields');
-//       return res.status(400).json({ 
-//         successStatus: false, 
-//         message: 'merchantId, merchantRefId, aadhaarNumber, and pidData are required',
-//         responseCode: '001'
-//       });
-//     }
-
-//     // Validate Aadhaar
-//     if (!/^\d{12}$/.test(aadhaarNumber)) {
-//       console.log('[AEPS Route] ❌ Invalid Aadhaar format');
-//       return res.status(400).json({ 
-//         successStatus: false, 
-//         message: 'Aadhaar number must be 12 digits',
-//         responseCode: '001'
-//       });
-//     }
-
-//     // Set default pipe if not provided
-//     pipe = pipe || '1';
-//     if (!['1', '2', '3'].includes(pipe)) {
-//       console.log('[AEPS Route] ❌ Invalid pipe:', pipe);
-//       return res.status(400).json({ 
-//         successStatus: false, 
-//         message: 'Invalid pipe value. Must be 1, 2, or 3',
-//         responseCode: '001'
-//       });
-//     }
-
-//     console.log('[AEPS Route] ✅ Validation passed');
-//     console.log('[AEPS Route] 📦 Calling provider with:', {
-//       merchantId,
-//       merchantRefId,
-//       aadhaarNumber: '****' + aadhaarNumber.slice(-4),
-//       pipe,
-//       deviceType: deviceType || 'mantra',
-//       pidDataLength: pidData ? pidData.length : 0,
-//       lat: lat || '0.0',
-//       long: long || '0.0'
-//     });
-
-//     // ✅ Call the provider directly
-//     const result = await vimopayAepsProvider.perform2FA({
-//       merchantId,
-//       merchantRefId,
-//       aadhaarNumber,
-//       pipe,
-//       deviceType: deviceType || 'mantra',
-//       pidData,
-//       lat: lat || '0.0',
-//       long: long || '0.0',
-//     });
-
-//     console.log('[AEPS Route] 📥 Provider result:', JSON.stringify(result, null, 2));
-
-//     // Check if the 2FA was successful
-//     if (result.status === '000') {
-//       console.log('[AEPS Route] ✅ 2FA Successful!');
-//       return res.json({
-//         successStatus: true,
-//         message: result.statusDescription || '2FA verification successful',
-//         responseCode: '000',
-//         data: {
-//           status: result.status,
-//           merchantStatus: result.merchantStatus,
-//           statusDescription: result.statusDescription || '2FA verification successful',
-//           merchantId: result.merchantId,
-//           txnRefId: result.txnRefId,
-//         }
-//       });
-//     } else {
-//       console.log('[AEPS Route] ❌ 2FA Failed with status:', result.status);
-//       return res.status(400).json({
-//         successStatus: false,
-//         message: result.statusDescription || '2FA verification failed',
-//         responseCode: result.status || '001',
-//         data: {
-//           status: result.status,
-//           merchantStatus: result.merchantStatus,
-//           statusDescription: result.statusDescription || '2FA verification failed',
-//           merchantId: result.merchantId,
-//           txnRefId: result.txnRefId,
-//         }
-//       });
-//     }
-
-//   } catch (error) {
-//     console.error('[AEPS Route] ❌ Error performing 2FA:', error.message);
-//     console.error('[AEPS Route] Stack:', error.stack);
-    
-//     return res.status(500).json({ 
-//       successStatus: false, 
-//       message: error.message || 'Internal server error',
-//       responseCode: '500',
-//       data: {
-//         status: '500',
-//         merchantStatus: 'Failed',
-//         statusDescription: error.message || 'Internal server error',
-//       }
-//     });
-//   }
-// });
 // In aepsRoutes.js, replace the /2fa route:
 router.post('/2fa', authenticate, async (req, res) => {
   try {
@@ -451,7 +323,7 @@ router.post('/2fa', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'merchantId, merchantRefId, aadhaarNumber, and pidData required' });
     }
     pipe = pipe || '2';
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       return res.status(400).json({ success: false, message: 'Invalid pipe value' });
     }
     const result = await aepsService.perform2FA(req.user.id, pipe, {
@@ -508,7 +380,7 @@ router.post('/cash-withdrawal', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
     pipe = pipe || '2';
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       return res.status(400).json({ success: false, message: 'Invalid pipe value' });
     }
     const result = await aepsService.cashWithdrawal(req.user.id, pipe, {
@@ -538,7 +410,7 @@ router.post('/cash-deposit', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
     pipe = pipe || '2';
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       return res.status(400).json({ success: false, message: 'Invalid pipe value' });
     }
     const result = await aepsService.cashDeposit(req.user.id, pipe, {
@@ -568,7 +440,7 @@ router.post('/balance-enquiry', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
     pipe = pipe || '2';
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       return res.status(400).json({ success: false, message: 'Invalid pipe value' });
     }
     const result = await aepsService.balanceEnquiry(req.user.id, pipe, {
@@ -590,6 +462,7 @@ router.post('/balance-enquiry', authenticate, async (req, res) => {
 });
 
 // Mini Statement
+// Mini Statement
 router.post('/mini-statement', authenticate, async (req, res) => {
   try {
     let { bankCode, pidData, accountType, device, aadhaarNo, mobileNo, lat, long, pipe } = req.body;
@@ -597,7 +470,7 @@ router.post('/mini-statement', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
     pipe = pipe || '2';
-    if (!['1', '2', '3'].includes(pipe)) {
+    if (!['1', '2', '3', '4'].includes(pipe)) {
       return res.status(400).json({ success: false, message: 'Invalid pipe value' });
     }
     const result = await aepsService.miniStatement(req.user.id, pipe, {
@@ -618,16 +491,228 @@ router.post('/mini-statement', authenticate, async (req, res) => {
   }
 });
 
+// ✅ Aadhaar Pay (AP) — NEW
+router.post('/aadhaar-pay', authenticate, async (req, res) => {
+  try {
+    let { amount, bankCode, pidData, accountType, lat, long, device, aadhaarNo, mobileNo, pipe } = req.body;
+    if (!amount || !bankCode || !pidData) {
+      return res.status(400).json({ success: false, message: 'Missing required fields' });
+    }
+    pipe = pipe || '2';
+    if (!['1', '2', '3', '4'].includes(pipe)) {
+      return res.status(400).json({ success: false, message: 'Invalid pipe value' });
+    }
+    const result = await aepsService.aadhaarPay(req.user.id, pipe, {
+      amount,
+      bankCode,
+      pidData,
+      accountType,
+      lat,
+      long,
+      device,
+      aadhaarNo,
+      mobileNo,
+      ipAddress: getIp(req),
+    });
+    res.json(result);
+  } catch (error) {
+    console.error('Error processing Aadhaar Pay:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+// ✅ UPDATED: GET /transactions - Now includes mini_statement data and user details
 router.get('/transactions', authenticate, async (req, res) => {
   try {
     const pipe = req.query.pipe || null;
-    if (pipe && !['1', '2', '3'].includes(pipe)) {
+    if (pipe && !['1', '2', '3', '4'].includes(pipe)) {
       return res.status(400).json({ success: false, message: 'Invalid pipe value' });
     }
+    
+    // Fetch user details along with transactions
+    // ✅ FIXED: Use db.query() instead of db()
+    const userResult = await db.query(
+      `SELECT business_name, phone FROM users WHERE id = $1`,
+      [req.user.id]
+    );
+    const user = userResult.rows[0] || null;
+
     const transactions = await aepsService.getUserTransactions(req.user.id, pipe);
-    res.json(transactions);
+    
+    // ✅ Format response to include transaction_list for mini statements
+    const formatted = transactions.map(tx => ({
+      id: tx.id,
+      txn_type: tx.txn_type,
+      amount: tx.amount,
+      aadhaar_last4: tx.aadhaar_last4,
+      bank_iin: tx.bank_iin,
+      bank_name: tx.bank_name,
+      rrn: tx.rrn,
+      npci_code: tx.npci_code,
+      npci_message: tx.npci_message,
+      status: tx.status,
+      provider: tx.provider,
+      device_used: tx.device_used,
+      created_at: tx.created_at,
+      pipe: tx.pipe,
+      available_balance: tx.available_balance || null,
+      transaction_list: tx.transaction_list || [],  // ✅ Mini statement entries
+      mini_statement: tx.mini_statement || null,    // ✅ Raw mini statement data
+      user: {
+        business_name: user?.business_name || null,
+        phone: user?.phone || null
+      }
+    }));
+    
+    res.json(formatted);
   } catch (error) {
     console.error('Error fetching transactions:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ✅ NEW: GET /history - Alias for transactions with same data
+router.get('/history', authenticate, async (req, res) => {
+  try {
+    const pipe = req.query.pipe || null;
+    if (pipe && !['1', '2', '3', '4'].includes(pipe)) {
+      return res.status(400).json({ success: false, message: 'Invalid pipe value' });
+    }
+    
+    // Fetch user details along with transactions
+    // ✅ FIXED: Use db.query() instead of db()
+    const userResult = await db.query(
+      `SELECT business_name, phone FROM users WHERE id = $1`,
+      [req.user.id]
+    );
+    const user = userResult.rows[0] || null;
+        
+    const transactions = await aepsService.getUserTransactions(req.user.id, pipe);
+    
+    // ✅ Format response to include transaction_list for mini statements
+    const formatted = transactions.map(tx => ({
+      id: tx.id,
+      txn_type: tx.txn_type,
+      amount: tx.amount,
+      aadhaar_last4: tx.aadhaar_last4,
+      bank_iin: tx.bank_iin,
+      bank_name: tx.bank_name,
+      rrn: tx.rrn,
+      npci_code: tx.npci_code,
+      npci_message: tx.npci_message,
+      status: tx.status,
+      provider: tx.provider,
+      device_used: tx.device_used,
+      created_at: tx.created_at,
+      pipe: tx.pipe,
+      available_balance: tx.available_balance || null,
+      transaction_list: tx.transaction_list || [],  // ✅ Mini statement entries
+      mini_statement: tx.mini_statement || null,    // ✅ Raw mini statement data
+      user: {
+        business_name: user?.business_name || null,
+        phone: user?.phone || null
+      }
+    }));
+    
+    res.json(formatted);
+  } catch (error) {
+    console.error('Error fetching history:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ✅ NEW: GET /mini-statement/:transactionId - Fetch mini statement details for a specific transaction
+router.get('/mini-statement/:transactionId', authenticate, async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    const userId = req.user.id;
+    
+    const result = await db.query(
+      `SELECT 
+        id, 
+        txn_type, 
+        mini_statement, 
+        available_balance,
+        rrn,
+        npci_code,
+        npci_message,
+        bank_iin,
+        aadhaar_last4,
+        created_at,
+        raw_response
+       FROM aeps_transactions 
+       WHERE id = $1 AND user_id = $2`,
+      [transactionId, userId]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Transaction not found' 
+      });
+    }
+    
+    const tx = result.rows[0];
+    let miniStatement = [];
+    let transactionList = [];
+    
+    // Parse mini_statement
+    if (tx.mini_statement) {
+      try {
+        miniStatement = typeof tx.mini_statement === 'string' 
+          ? JSON.parse(tx.mini_statement) 
+          : tx.mini_statement;
+        
+        // Extract transaction list
+        if (Array.isArray(miniStatement)) {
+          transactionList = miniStatement;
+        } else if (miniStatement && typeof miniStatement === 'object') {
+          transactionList = miniStatement.transactions || 
+                          miniStatement.list || 
+                          miniStatement.items || 
+                          [];
+        }
+      } catch (e) {
+        console.error('Error parsing mini_statement:', e);
+      }
+    }
+    
+    // If mini_statement is empty, try raw_response
+    if (transactionList.length === 0 && tx.raw_response) {
+      try {
+        const raw = typeof tx.raw_response === 'string' 
+          ? JSON.parse(tx.raw_response) 
+          : tx.raw_response;
+        
+        if (raw && raw.transactionList && Array.isArray(raw.transactionList)) {
+          transactionList = raw.transactionList;
+        } else if (raw && raw.transaction_list && Array.isArray(raw.transaction_list)) {
+          transactionList = raw.transaction_list;
+        }
+      } catch (e) {
+        // Silently ignore
+      }
+    }
+    
+    res.json({
+      success: true,
+      data: {
+        id: tx.id,
+        txn_type: tx.txn_type,
+        rrn: tx.rrn,
+        npci_code: tx.npci_code,
+        npci_message: tx.npci_message,
+        bank_iin: tx.bank_iin,
+        aadhaar_last4: tx.aadhaar_last4,
+        created_at: tx.created_at,
+        available_balance: tx.available_balance,
+        transaction_list: transactionList,
+        mini_statement: miniStatement,
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching mini statement:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });

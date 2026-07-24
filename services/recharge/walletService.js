@@ -51,11 +51,17 @@ const addMoney = async (userId, amount, description, adminId = null, merchantRef
         const newBalance = parseFloat(updateResult.rows[0]?.balance || 0);
 
         // 2. Insert a transaction record (using columns that exist in your table)
-        await client.query(
-            `INSERT INTO transactions 
-             (user_id, amount, type, description, merchant_ref_id, created_at) 
-             VALUES ($1, $2, 'credit', $3, $4, NOW())`,
-            [userId, amount, description, merchantRefId || `CREDIT-${Date.now()}`]
+       await client.query(
+          `INSERT INTO transactions 
+          (user_id, amount, type, description, merchant_ref_id, device_type, created_at) 
+          VALUES ($1, $2, 'credit', $3, $4, $5, NOW())`,
+          [
+            userId, 
+            amount, 
+            description, 
+            merchantRefId || `CREDIT-${Date.now()}`,
+            'app'  // ✅ Added device_type
+          ]
         );
 
         await client.query('COMMIT');

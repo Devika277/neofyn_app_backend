@@ -191,30 +191,30 @@ router.post('/transaction', async (req, res) => {
       });
     }
 
-    await pool.query(
-      `INSERT INTO aeps_transactions
-        (user_id, merchant_ref_id, txn_ref_id, txn_type, amount,
-         aadhaar_no, bank_iin, rrn, npci_code, npci_message,
-         available_balance, status, pipe, raw_response)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-      [
-        userId || null,
-        merchantRefId,
-        txnRefId,
-        txnType,
-        amount,
-        aadhaarNo,
-        bankIIN,
-        rrn,
-        npciCode,
-        npciMessage,
-        availableBalance,
-        status,
-        pipe,
-        rawResponse ? JSON.stringify(rawResponse) : null,
-      ]
-    );
-
+await pool.query(
+  `INSERT INTO aeps_transactions
+    (user_id, merchant_ref_id, txn_ref_id, txn_type, amount,
+     aadhaar_no, bank_iin, rrn, npci_code, npci_message,
+     available_balance, status, pipe, raw_response, device_type)
+   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+  [
+    userId || null,
+    merchantRefId,
+    txnRefId,
+    txnType,
+    amount,
+    aadhaarNo,
+    bankIIN,
+    rrn,
+    npciCode,
+    npciMessage,
+    availableBalance,
+    status,
+    pipe,
+    rawResponse ? JSON.stringify(rawResponse) : null,
+    'app'  // ✅ Default device_type
+  ]
+);
     res.json({ success: true, message: 'Transaction saved successfully' });
 
   } catch (err) {

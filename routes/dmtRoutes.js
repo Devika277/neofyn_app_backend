@@ -69,6 +69,7 @@ router.delete('/beneficiary/:beneficiaryId', dmtController.deleteBeneficiary);
 //   '/callback',
 //   dmtController.dmtWebhook
 // );
+router.post('/status', protect, dmtController.checkDmtStatusPost);
 
 router.post('/transfer', requirePermission('dmt.transfer'), dmtController.createDmtTransfer);
 

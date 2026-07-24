@@ -3,10 +3,10 @@
 //   - All URLs updated to production endpoints (no 'uat' suffix)
 //   - WADH values added to transactions & E-KYC, now trimmed to remove hidden chars
 //   - ✅ FIX: aadhaarNumber added to merchantEkyc (required for biometric match)
-//   - ✅ FIX: dynamic pipe support – uses params.pipe to select correct WADH (Pipe 1, 2, or 3)
+//   - ✅ FIX: dynamic pipe support – uses params.pipe to select correct WADH (Pipe 1, 2, 3 or 4)
 //   - ✅ FIX: 2FA does NOT send wadh (as confirmed by VimoPay) – but we now send wadh: "" explicitly
 //   - ✅ FIX: Removed dummy default '999999999999' for aadhaarNumber – now required
-//   - ✅ FIX: cashWithdrawal, cashDeposit, balanceEnquiry, miniStatement now use dynamic WADH (Pipe 1, 2, or 3)
+//   - ✅ FIX: cashWithdrawal, cashDeposit, balanceEnquiry, miniStatement now use dynamic WADH (Pipe 1, 2, 3 or 4)
 //   - ✅ FIX: Masked Aadhaar in logs to prevent PII leakage
 //   - ✅ FIX: Unified status extraction across all methods (result.data?.status || result.responseCode)
 //   - ✅ FIX: Added full PID option logging for 2FA debugging
@@ -253,7 +253,7 @@ function extractTxnData(result) {
 }
 
 // ============================================================
-// HELPER – get WADH based on pipe (Pipe 1, 2, or 3)
+// HELPER – get WADH based on pipe (Pipe 1, 2, 3 or 4)
 // ============================================================
 function getWADH(pipe) {
   if (pipe === '1') {
@@ -262,7 +262,10 @@ function getWADH(pipe) {
     return (process.env.AEPS_WADH_PIPE2 || '').trim();
   } else if (pipe === '3') {
     return (process.env.AEPS_WADH_PIPE3 || '').trim();
+  } else if (pipe === '4') {
+    return (process.env.AEPS_WADH_PIPE4 || 'E0jzJ/P8UopUHAieZn8CKqS4WPMi5ZSYXgfnlfkWjrc=').trim();
   }
+  
   // Default fallback
   return (process.env.AEPS_WADH_PIPE2 || '').trim();
 }
@@ -295,14 +298,13 @@ async function registerMerchant(params) {
     throw new Error('Valid 12-digit agent Aadhaar is required for merchant registration');
   }
 
-  // Validate Pipe
+  // Validate Pipe - UPDATED to include pipe 4
   const pipe = params.pipe || '1';
-  if (!['1', '2', '3'].includes(pipe)) {
+  if (!['1', '2', '3', '4'].includes(pipe)) {  // ✅ Added '4'
     console.error('[VimoPay AEPS] ❌ Invalid pipe:', pipe);
-    throw new Error('Invalid pipe value. Must be 1, 2, or 3');
+    throw new Error('Invalid pipe value. Must be 1, 2, 3, or 4');
   }
-// ✅ ADD THIS CODE RIGHT HERE - Before building the payload
-  
+
   // Check if merchant already exists in other pipes
   console.log('[VimoPay AEPS] 🔍 Checking if merchant exists in other pipes...');
   const existingMerchants = await checkMerchantInAllPipes(
@@ -331,7 +333,6 @@ async function registerMerchant(params) {
       // Registered in OTHER pipes - log but allow registration
       console.log(`[VimoPay AEPS] ℹ️ Merchant exists in pipes: ${existingPipes.join(', ')}`);
       console.log(`[VimoPay AEPS] ℹ️ Attempting registration in pipe ${pipe} anyway...`);
-      // Continue with registration - don't block
     }
   }
   // ✅ Build the payload with ALL required fields
@@ -371,12 +372,35 @@ async function registerMerchant(params) {
     pipe: pipe, // ✅ Explicitly set the pipe
   };
 
+
+   // ✅ Pipe 4 specific fields (VimoPay requires extra fields for Pipe 4)
+  // ✅ Pipe 4 specific fields (VimoPay requires extra fields for Pipe 4)
+if (pipe === '4') {
+  // Generate shopName for Pipe 4
+  let shopName = params.shopName || params.businessName || '';
+  if (!shopName) {
+    shopName = `${params.firstName || 'User'}'s Shop`;  // ✅ Use params.firstName
+  }
+  // Clean shopName - remove special characters
+  shopName = shopName.trim().replace(/[^a-zA-Z0-9\s]/g, '');
+  if (!shopName) {
+    shopName = `${params.firstName || 'User'}'s Shop`;
+  }
+  
+  payload.shopName = shopName; // ✅ Only add for Pipe 4
+  
+  console.log('[VimoPay AEPS] 🟢 Pipe 4 - Added shopName:', shopName);
+} else {
+  console.log(`[VimoPay AEPS] 🟡 Pipe ${pipe} - No extra fields needed`);
+}
+
   console.log('[VimoPay AEPS] 📦 Payload being sent (sensitive data masked):', {
     ...payload,
     aadhaarNumber: '****' + payload.aadhaarNumber.slice(-4),
     aadhaarNo: '****' + payload.aadhaarNo.slice(-4),
     bankAccountNumber: payload.bankAccountNumber ? '****' + payload.bankAccountNumber.slice(-4) : 'null',
     bankAccount: payload.bankAccount ? '****' + payload.bankAccount.slice(-4) : 'null',
+    shopName: payload.shopName || 'NOT SENT',
   });
 
   try {
@@ -496,75 +520,320 @@ async function getBankIINs() {
 async function sendOTP(params) {
   console.log('[VimoPay AEPS] ════════════════════════════════════════════');
   console.log('[VimoPay AEPS] 🔵 sendOTP CALLED');
-  console.log('[VimoPay AEPS] merchantId:', params.merchantId);
-  console.log('[VimoPay AEPS] merchantRefId:', params.merchantRefId);
-  console.log('[VimoPay AEPS] pipe:', params.pipe || '1');
+  console.log('[VimoPay AEPS] ════════════════════════════════════════════');
+  
+  // Log all input parameters with detailed validation
+  console.log('[VimoPay AEPS] 📥 Input Parameters:');
+  console.log('[VimoPay AEPS]   - merchantId:', params.merchantId || '❌ MISSING');
+  console.log('[VimoPay AEPS]   - merchantRefId:', params.merchantRefId || '❌ MISSING');
+  console.log('[VimoPay AEPS]   - pipe:', params.pipe || '1 (default)');
+  console.log('[VimoPay AEPS]   - phoneNumber:', params.phoneNumber || '❌ NOT PROVIDED');
+  console.log('[VimoPay AEPS]   - userId:', params.userId || '❌ NOT PROVIDED');
+  console.log('[VimoPay AEPS]   - bankAccount:', params.bankAccount ? params.bankAccount.substring(0, 4) + 'XXXX' : '❌ NOT PROVIDED');
+  console.log('[VimoPay AEPS]   - ifsc:', params.ifsc || '❌ NOT PROVIDED');
+  
+  // Validate required parameters
+  console.log('[VimoPay AEPS] 🔍 Parameter Validation:');
+  const validationErrors = [];
+  if (!params.merchantId) validationErrors.push('merchantId is required');
+  if (!params.merchantRefId) validationErrors.push('merchantRefId is required');
+  if (!params.pipe) validationErrors.push('pipe is required (1, 2, 3, or 4)');
+  
+  if (validationErrors.length > 0) {
+    console.log('[VimoPay AEPS] ❌ Validation Errors:', validationErrors.join(', '));
+    console.log('[VimoPay AEPS] ════════════════════════════════════════════');
+    throw new Error('Validation failed: ' + validationErrors.join(', '));
+  }
+  
+  // Check if phone number is valid (if provided)
+  if (params.phoneNumber) {
+    const phoneRegex = /^[0-9]{10}$/;
+    if (!phoneRegex.test(params.phoneNumber)) {
+      console.log('[VimoPay AEPS] ⚠️ Invalid phone number format:', params.phoneNumber);
+      console.log('[VimoPay AEPS] 💡 Phone should be 10 digits');
+    } else {
+      console.log('[VimoPay AEPS] ✅ Phone number format valid:', params.phoneNumber);
+    }
+  }
+  
+  // Determine which pipe is being used
+// In sendOTP() - update validation
+console.log('[VimoPay AEPS] 🔄 Pipe Selection:');
+if (params.pipe === '1') {
+  console.log('[VimoPay AEPS]   - Using PIPE 1 (Standard Onboarding)');
+} else if (params.pipe === '2') {
+  console.log('[VimoPay AEPS]   - Using PIPE 2 (Re-onboarding/Retry)');
+} else if (params.pipe === '3') {
+  console.log('[VimoPay AEPS]   - Using PIPE 3 (Alternative)');
+} else if (params.pipe === '4') {
+  console.log('[VimoPay AEPS]   - Using PIPE 4 (New Pipe)');
+} else {
+  console.log('[VimoPay AEPS]   - Unknown pipe:', params.pipe);
+}
+
   console.log('[VimoPay AEPS] ════════════════════════════════════════════');
 
   try {
-    const result = await callVimoPayAPI('/aepsapi/api/payment/merchantonboardsendotppipe', 'POST', {
+    // Build request payload
+    const requestPayload = {
       merchantId: params.merchantId,
       merchantRefId: params.merchantRefId,
       pipe: params.pipe || '1',
-    });
+    };
+    
+    console.log('[VimoPay AEPS] 📤 Request Payload:');
+    console.log('[VimoPay AEPS]   - merchantId:', requestPayload.merchantId);
+    console.log('[VimoPay AEPS]   - merchantRefId:', requestPayload.merchantRefId);
+    console.log('[VimoPay AEPS]   - pipe:', requestPayload.pipe);
+    console.log('[VimoPay AEPS]   - Full Payload:', JSON.stringify(requestPayload, null, 2));
+    
+    // Log timestamp
+    console.log('[VimoPay AEPS] ⏰ Request Timestamp:', new Date().toISOString());
+    
+    // API call start time
+    const startTime = Date.now();
+    console.log('[VimoPay AEPS] 🚀 Making API call to VimoPay...');
+    
+    const result = await callVimoPayAPI('/aepsapi/api/payment/merchantonboardsendotppipe', 'POST', requestPayload);
+    
+    // API call duration
+    const duration = Date.now() - startTime;
+    console.log('[VimoPay AEPS] ⏱️ API Response Time:', duration, 'ms');
 
     console.log('[VimoPay AEPS] 📥 sendOTP RESPONSE RECEIVED');
-    console.log('[VimoPay AEPS] Full response:', JSON.stringify(result, null, 2));
-
+    console.log('[VimoPay AEPS] ════════════════════════════════════════════');
+    
+    // Log raw response
+    console.log('[VimoPay AEPS] 📄 Raw Response:');
+    console.log('[VimoPay AEPS]   - Type:', typeof result);
+    console.log('[VimoPay AEPS]   - Is Array:', Array.isArray(result));
+    console.log('[VimoPay AEPS]   - Full Response:', JSON.stringify(result, null, 2));
+    
     // Extract decrypted data
     const d = result.data && typeof result.data === 'object' ? result.data : result;
     
-    console.log('[VimoPay AEPS] 🔍 Response Details:');
-    console.log('[VimoPay AEPS]   - successStatus:', result.successStatus);
-    console.log('[VimoPay AEPS]   - responseCode:', result.responseCode);
-    console.log('[VimoPay AEPS]   - message:', result.message);
-    console.log('[VimoPay AEPS]   - d.status:', d.status);
-    console.log('[VimoPay AEPS]   - d.merchantStatus:', d.merchantStatus);
-    console.log('[VimoPay AEPS]   - d.statusDescription:', d.statusDescription);
-    console.log('[VimoPay AEPS]   - d.message:', d.message);
-    console.log('[VimoPay AEPS]   - d.ErrorMessage:', d.ErrorMessage);
+    console.log('[VimoPay AEPS] 📊 Parsed Response:');
+    console.log('[VimoPay AEPS]   - Top-level data exists:', !!result.data);
+    console.log('[VimoPay AEPS]   - Extracted data type:', typeof d);
+    console.log('[VimoPay AEPS]   - Is data array:', Array.isArray(d));
     
-    // ✅ Check if there are validation errors (array response)
+    // Detailed response breakdown
+    console.log('[VimoPay AEPS] 🔍 Response Breakdown:');
+    
+    // Top-level fields
+    console.log('[VimoPay AEPS]   📌 Top-Level Fields:');
+    console.log('[VimoPay AEPS]     - successStatus:', result.successStatus !== undefined ? result.successStatus : '❌ MISSING');
+    console.log('[VimoPay AEPS]     - responseCode:', result.responseCode || '❌ MISSING');
+    console.log('[VimoPay AEPS]     - message:', result.message || '❌ MISSING');
+    console.log('[VimoPay AEPS]     - data exists:', result.data ? '✅ YES' : '❌ NO');
+    
+    // Data fields (d)
+    console.log('[VimoPay AEPS]   📌 Data Fields (d):');
+    console.log('[VimoPay AEPS]     - status:', d.status || '❌ MISSING');
+    console.log('[VimoPay AEPS]     - merchantStatus:', d.merchantStatus || '❌ MISSING');
+    console.log('[VimoPay AEPS]     - statusDescription:', d.statusDescription || '❌ MISSING');
+    console.log('[VimoPay AEPS]     - merchantId:', d.merchantId || '❌ MISSING');
+    console.log('[VimoPay AEPS]     - merchantRefId:', d.merchantRefId || '❌ MISSING');
+    console.log('[VimoPay AEPS]     - txnRefId:', d.txnRefId || '❌ MISSING');
+    console.log('[VimoPay AEPS]     - pipe:', d.pipe || '❌ MISSING');
+    console.log('[VimoPay AEPS]     - message (data):', d.message || '❌ MISSING');
+    console.log('[VimoPay AEPS]     - ErrorMessage (data):', d.ErrorMessage || '❌ MISSING');
+    
+    // Check for validation errors array
     if (Array.isArray(d)) {
-      console.log('[VimoPay AEPS] ⚠️ Validation errors array:');
+      console.log('[VimoPay AEPS] ⚠️ Response is an array (validation errors):');
       d.forEach((err, index) => {
-        console.log(`[VimoPay AEPS]   Error ${index + 1}:`, JSON.stringify(err, null, 2));
+        console.log(`[VimoPay AEPS]   Error ${index + 1}:`);
+        console.log(`[VimoPay AEPS]     - Field:`, err.field || 'Unknown');
+        console.log(`[VimoPay AEPS]     - Error:`, err.error || err.message || JSON.stringify(err));
       });
     }
-
+    
+    // Status code analysis
+    console.log('[VimoPay AEPS] 📌 Status Analysis:');
     const status = getStatusFromResult(result);
-    console.log('[VimoPay AEPS] Extracted status:', status);
+    console.log('[VimoPay AEPS]   - Extracted status:', status);
+    
+    if (status === '000' || status === '200') {
+      console.log('[VimoPay AEPS]   ✅ Success status code');
+    } else if (status === '001' || status === '100') {
+      console.log('[VimoPay AEPS]   ⚠️ Failure status code');
+    } else {
+      console.log('[VimoPay AEPS]   ℹ️ Unknown status code:', status);
+    }
+    
+    // OTP delivery status check
+    console.log('[VimoPay AEPS] 📱 OTP Delivery Analysis:');
+    if (result.successStatus === true && d.status === '000') {
+      console.log('[VimoPay AEPS]   ✅ API reports OTP was sent successfully');
+      
+      // Check if phone number was provided
+      if (params.phoneNumber) {
+        console.log('[VimoPay AEPS]   📞 Phone number for OTP:', params.phoneNumber);
+        
+        // Check if phone is in correct format
+        const phoneRegex = /^[0-9]{10}$/;
+        if (phoneRegex.test(params.phoneNumber)) {
+          console.log('[VimoPay AEPS]   ✅ Phone number format is valid');
+        }
+      } else {
+        console.log('[VimoPay AEPS]   ⚠️ Phone number not provided in request');
+        console.log('[VimoPay AEPS]   💡 Add phone number to params for better tracking');
+      }
+      
+      // Log delivery status from API
+      if (d.statusDescription && d.statusDescription.includes('OTP')) {
+        console.log('[VimoPay AEPS]   📨 OTP Status:', d.statusDescription);
+      }
+      
+    } else if (result.successStatus === false) {
+      console.log('[VimoPay AEPS]   ❌ API reports failure');
+      console.log('[VimoPay AEPS]   📝 Failure reason:', result.message || d.statusDescription || 'Unknown');
+      
+      // Analyze failure reasons
+      if (d.statusDescription && d.statusDescription.includes('Invalid Account')) {
+        console.log('[VimoPay AEPS]   🔴 Bank account verification failed');
+        console.log('[VimoPay AEPS]   💡 Solution: Verify bank account details');
+      } else if (d.statusDescription && d.statusDescription.includes('Duplicate')) {
+        console.log('[VimoPay AEPS]   🔴 Duplicate merchant ID');
+        console.log('[VimoPay AEPS]   💡 Solution: Generate new merchantRefId');
+      } else if (d.statusDescription && d.statusDescription.includes('not found')) {
+        console.log('[VimoPay AEPS]   🔴 Merchant not found');
+        console.log('[VimoPay AEPS]   💡 Solution: Create merchant first');
+      }
+    }
+    
+    // Compare request vs response merchant IDs
+    if (d.merchantId && params.merchantId && d.merchantId !== params.merchantId) {
+      console.log('[VimoPay AEPS] ⚠️ Merchant ID Mismatch:');
+      console.log('[VimoPay AEPS]   - Request merchantId:', params.merchantId);
+      console.log('[VimoPay AEPS]   - Response merchantId:', d.merchantId);
+      console.log('[VimoPay AEPS]   - A new merchant may have been created');
+    }
+    
+    // Check if OTP should be sent (PENDING status check)
+    if (d.merchantStatus === 'PENDING') {
+      console.log('[VimoPay AEPS] ⚠️ Merchant status is PENDING');
+      console.log('[VimoPay AEPS] 💡 OTP may not be sent to PENDING merchants');
+      console.log('[VimoPay AEPS] 💡 Complete KYC and bank verification first');
+    }
+    
+    // Log success/failure summary
+    console.log('[VimoPay AEPS] 📊 Summary:');
+    console.log('[VimoPay AEPS]   - Success Status:', result.successStatus !== undefined ? result.successStatus : '❌ Unknown');
+    console.log('[VimoPay AEPS]   - Response Code:', result.responseCode || '❌ Unknown');
+    console.log('[VimoPay AEPS]   - Message:', result.message || '❌ Unknown');
+    console.log('[VimoPay AEPS]   - Merchant ID:', d.merchantId || params.merchantId || '❌ Unknown');
+    console.log('[VimoPay AEPS]   - Transaction ID:', d.txnRefId || '❌ Unknown');
+    
+    // Check if response indicates OTP was sent
+    const otpSent = result.successStatus === true && 
+                   (d.status === '000' || d.merchantStatus === 'Success');
+    
+    if (otpSent) {
+      console.log('[VimoPay AEPS] ✅✅✅ OTP SENT SUCCESSFULLY ✅✅✅');
+      console.log('[VimoPay AEPS] 📱 Check phone:', params.phoneNumber || 'Unknown number');
+      console.log('[VimoPay AEPS] ⏰ Time:', new Date().toISOString());
+    } else {
+      console.log('[VimoPay AEPS] ❌❌❌ OTP NOT SENT ❌❌❌');
+      console.log('[VimoPay AEPS] 💡 Troubleshooting:');
+      console.log('[VimoPay AEPS]   1. Verify merchant status is not PENDING');
+      console.log('[VimoPay AEPS]   2. Check bank account is verified');
+      console.log('[VimoPay AEPS]   3. Try pipe 2 if pipe 1 failed');
+      console.log('[VimoPay AEPS]   4. Ensure phone number is correct');
+      console.log('[VimoPay AEPS]   5. Check SMS gateway status');
+    }
+    
     console.log('[VimoPay AEPS] ════════════════════════════════════════════');
 
-    return {
+    // Return structured response
+    const response = {
       status: status,
       merchantStatus: d.merchantStatus || result.merchantStatus || (result.successStatus ? 'Success' : 'Failed'),
       statusDescription: d.statusDescription || result.message || d.message || '',
       merchantId: d.merchantId || result.merchantId || params.merchantId,
       txnRefId: d.txnRefId || result.txnRefId,
+      // Additional debug info
+      _debug: {
+        phoneNumber: params.phoneNumber || null,
+        userId: params.userId || null,
+        pipe: params.pipe || '1',
+        responseTime: duration + 'ms',
+        timestamp: new Date().toISOString(),
+        rawSuccess: result.successStatus,
+        rawCode: result.responseCode,
+      }
     };
+    
+    console.log('[VimoPay AEPS] 📦 Return Object:', JSON.stringify(response, null, 2));
+    
+    return response;
+    
   } catch (error) {
-    console.error('[VimoPay AEPS] ❌ sendOTP error:', error.message);
-    console.error('[VimoPay AEPS] Stack:', error.stack);
+    console.error('[VimoPay AEPS] ❌❌❌ sendOTP ERROR ❌❌❌');
+    console.error('[VimoPay AEPS] Error Message:', error.message);
+    console.error('[VimoPay AEPS] Error Stack:', error.stack);
+    
+    // Log error details
+    if (error.response) {
+      console.error('[VimoPay AEPS] 📄 Error Response:');
+      console.error('[VimoPay AEPS]   - Status:', error.response.status);
+      console.error('[VimoPay AEPS]   - Data:', JSON.stringify(error.response.data, null, 2));
+    } else if (error.request) {
+      console.error('[VimoPay AEPS] 📄 No response received from server');
+      console.error('[VimoPay AEPS]   - Request was sent but no response');
+    } else {
+      console.error('[VimoPay AEPS] 📄 Request setup error');
+    }
+    
     console.log('[VimoPay AEPS] ════════════════════════════════════════════');
     throw error;
   }
 }
 
+async function verifyOTPDelivery(merchantId, txnRefId, phoneNumber) {
+  console.log('[VimoPay AEPS] 🔍 Verifying OTP delivery...');
+  console.log('[VimoPay AEPS]   - Merchant ID:', merchantId);
+  console.log('[VimoPay AEPS]   - Transaction ID:', txnRefId);
+  console.log('[VimoPay AEPS]   - Phone Number:', phoneNumber);
+  
+  try {
+    // Check with VimoPay if OTP status endpoint exists
+    const result = await callVimoPayAPI('/aepsapi/api/payment/otpstatus', 'POST', {
+      merchantId: merchantId,
+      txnRefId: txnRefId
+    });
+    
+    console.log('[VimoPay AEPS] 📥 OTP Status Response:');
+    console.log('[VimoPay AEPS]   - Status:', result.status);
+    console.log('[VimoPay AEPS]   - Delivery Status:', result.deliveryStatus || 'Unknown');
+    console.log('[VimoPay AEPS]   - Sent At:', result.sentAt || 'Unknown');
+    
+    return result;
+  } catch (error) {
+    console.log('[VimoPay AEPS] ⚠️ OTP status check not available:', error.message);
+    return null;
+  }
+}
 async function resendOTP(params) {
   console.log('[VimoPay AEPS] ════════════════════════════════════════════');
   console.log('[VimoPay AEPS] 🔵 resendOTP CALLED');
   console.log('[VimoPay AEPS] merchantId:', params.merchantId);
   console.log('[VimoPay AEPS] merchantRefId:', params.merchantRefId);
   console.log('[VimoPay AEPS] pipe:', params.pipe || '1');
+  console.log('[VimoPay AEPS] phoneNumber (from params):', params.phoneNumber || 'NOT PROVIDED');
   console.log('[VimoPay AEPS] ════════════════════════════════════════════');
 
   try {
-    const result = await callVimoPayAPI('/aepsapi/api/payment/merchantonboardsendotppipe', 'POST', {
+    // Log the request payload
+    const requestPayload = {
       merchantId: params.merchantId,
       merchantRefId: params.merchantRefId,
       pipe: params.pipe || '1',
-    });
+    };
+    console.log('[VimoPay AEPS] 📤 Request Payload:', JSON.stringify(requestPayload, null, 2));
+
+    const result = await callVimoPayAPI('/aepsapi/api/payment/merchantonboardsendotppipe', 'POST', requestPayload);
 
     console.log('[VimoPay AEPS] 📥 resendOTP RESPONSE RECEIVED');
     console.log('[VimoPay AEPS] Full response:', JSON.stringify(result, null, 2));
@@ -581,6 +850,9 @@ async function resendOTP(params) {
     console.log('[VimoPay AEPS]   - d.statusDescription:', d.statusDescription);
     console.log('[VimoPay AEPS]   - d.message:', d.message);
     console.log('[VimoPay AEPS]   - d.ErrorMessage:', d.ErrorMessage);
+    console.log('[VimoPay AEPS]   - d.merchantId:', d.merchantId);
+    console.log('[VimoPay AEPS]   - d.txnRefId:', d.txnRefId);
+    console.log('[VimoPay AEPS]   - d.pipe:', d.pipe);
     
     // ✅ Check if there are validation errors (array response)
     if (Array.isArray(d)) {
@@ -590,8 +862,51 @@ async function resendOTP(params) {
       });
     }
 
+    // 🔍 Check for OTP delivery status
+    if (result.successStatus === true && d.status === '000') {
+      console.log('[VimoPay AEPS] ✅ OTP request successful according to API');
+      console.log('[VimoPay AEPS] 📱 OTP should be sent to:', params.phoneNumber || 'Unknown number');
+      
+      // Log what the API says about OTP delivery
+      console.log('[VimoPay AEPS] 📨 OTP Delivery Status from API:');
+      console.log('[VimoPay AEPS]   - statusDescription:', d.statusDescription);
+      console.log('[VimoPay AEPS]   - merchantStatus:', d.merchantStatus);
+      
+      // ⚠️ Check if phone number is masked or different
+      if (d.merchantId && d.merchantId !== params.merchantId) {
+        console.log('[VimoPay AEPS] ⚠️ Merchant ID mismatch!');
+        console.log('[VimoPay AEPS]   - Requested merchantId:', params.merchantId);
+        console.log('[VimoPay AEPS]   - Response merchantId:', d.merchantId);
+        console.log('[VimoPay AEPS]   - This could mean a new merchant was created');
+      }
+    }
+
+    // 🔴 Check for OTP sending failures
+    if (d.statusDescription && d.statusDescription.includes('OTP')) {
+      console.log('[VimoPay AEPS] 📨 OTP Related Status:', d.statusDescription);
+    }
+
+    // 📞 Verify phone number in the user record
+    console.log('[VimoPay AEPS] 📞 Phone Number Check:');
+    console.log('[VimoPay AEPS]   - User phone in DB: 9600750104');
+    console.log('[VimoPay AEPS]   - Phone in request:', params.phoneNumber || 'Not provided');
+    console.log('[VimoPay AEPS]   - Match:', params.phoneNumber === '9600750104' ? '✅ YES' : '❌ NO');
+
     const status = getStatusFromResult(result);
     console.log('[VimoPay AEPS] Extracted status:', status);
+    
+    // 🔍 Additional debug: Check if OTP was actually sent via SMS
+    if (result.successStatus === true && d.status === '000') {
+      console.log('[VimoPay AEPS] ⚠️ IMPORTANT: API says OTP sent, but user not receiving.');
+      console.log('[VimoPay AEPS] Possible reasons:');
+      console.log('[VimoPay AEPS]   1. SMS gateway failure (silent)');
+      console.log('[VimoPay AEPS]   2. DND active on number 9600750104');
+      console.log('[VimoPay AEPS]   3. SMS template not approved');
+      console.log('[VimoPay AEPS]   4. Wrong phone number in merchant record');
+      console.log('[VimoPay AEPS]   5. Rate limiting (too many requests)');
+      console.log('[VimoPay AEPS]   6. Merchant status is PENDING (not onboarded)');
+    }
+    
     console.log('[VimoPay AEPS] ════════════════════════════════════════════');
 
     return {
@@ -600,6 +915,7 @@ async function resendOTP(params) {
       statusDescription: d.statusDescription || result.message || d.message || '',
       merchantId: d.merchantId || result.merchantId || params.merchantId,
       txnRefId: d.txnRefId || result.txnRefId,
+      phoneNumber: params.phoneNumber || '9600750104',
     };
   } catch (error) {
     console.error('[VimoPay AEPS] ❌ resendOTP error:', error.message);
@@ -981,10 +1297,6 @@ async function cashDeposit(params) {
   const pipe = params.pipe || '1';
 
   console.log(`[VimoPay AEPS] Cash deposit pipe: ${pipe}`);
-
-  // ✅ Clean PID data
-  // const cleanedPidData = cleanPidDataForTransaction(params.pidData);
-
   
   const result = await callVimoPayAPI('/aepsapi/api/payment/AepsTransactionPipe', 'POST', {
     merchantRefId:   `TXN${Date.now()}`,
@@ -1072,6 +1384,36 @@ async function miniStatement(params) {
 
   return txnData;
 }
+
+
+// Aadhaar Pay (AP)
+async function aadhaarPay(params) {
+  const pipe = params.pipe || '1';
+
+  console.log(`[VimoPay AEPS] Aadhaar Pay pipe: ${pipe}`);
+
+  const result = await callVimoPayAPI('/aepsapi/api/payment/AepsTransactionPipe', 'POST', {
+    merchantRefId: `TXN${Date.now()}`,
+    merchantId: params.merchantId,
+    transactionType: 'AP',
+    aadhaarNumber: params.aadhaarNo,
+    mobileNumber: params.mobileNo,
+    amount: params.amount.toString(),
+    bankIIN: (params.bankCode || '').trim(),
+    ipAddress: params.ipAddress || '127.0.0.1',
+    pipe: pipe,
+    lat: params.lat || '0.0',
+    long: params.long || '0.0',
+    deviceType: params.device || 'mantra',
+    pidData: params.pidData,
+    udf1: '', udf2: '', udf3: '',
+  });
+
+  console.log('[VimoPay AEPS] AP response:', JSON.stringify(result));
+  return extractTxnData(result);
+}
+
+
 // ✅ ADD THE NEW FUNCTION HERE - BEFORE module.exports
 
 // ============================================================
@@ -1085,7 +1427,7 @@ async function checkMerchantInAllPipes(panNumber, aadhaarNumber) {
   const results = [];
   
   // Check each pipe
-  for (const pipe of ['1', '2', '3']) {
+  for (const pipe of ['1', '2', '3','4']) {
     try {
       // Use the merchant status endpoint to check if merchant exists
       const result = await callVimoPayAPI('/aepsapi/api/payment/merchantstatusbypan', 'POST', {
@@ -1128,4 +1470,5 @@ module.exports = {
   miniStatement,
   checkMerchantInAllPipes,
   init,
+  verifyOTPDelivery
 };

@@ -142,7 +142,7 @@ async function processDmtTransfer(userId, { remitterId, beneficiaryId, amount, t
 
     // ========== SURCHARGE CALCULATION (DMT Lite only) ==========
     let surcharge = 0;
-    if (productType === 'lite') {
+    if (productType === 'lite'|| productType === 'smart') {
       if (amount >= 100 && amount <= 1000) {
         surcharge = 10;
       } else if (amount > 1000) {
@@ -166,10 +166,10 @@ async function processDmtTransfer(userId, { remitterId, beneficiaryId, amount, t
     // 8. Insert transaction record (amount = transfer amount only)
     await client.query(
       `INSERT INTO dmt_transactions 
-       (retailer_id, remitter_id, beneficiary_id, amount, transfer_mode, iyda_txn_id, status, remark)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)`,
-      [userId, remitterId, beneficiaryId, amount, transferMode, iydaTxnId, remark || null]
-    );
+       (retailer_id, remitter_id, beneficiary_id, amount, transfer_mode, iyda_txn_id, status, remark,device_type)
+       VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7,$8)`,
+      [userId, remitterId, beneficiaryId, amount, transferMode, iydaTxnId, remark || null, 'app']
+);
 
     // 9. Increment monthly used (by transfer amount only)
     await client.query(
@@ -288,96 +288,102 @@ const isSuccess =
 normalizedStatus === '000' ||
 normalizedStatus === '00' ||
 normalizedStatus === 'SUCCESS';
-    const isQueued = statusCode === '004' || statusCode === 'PENDING' || statusCode === 'QUEUED';
+    
+const isQueued = statusCode === '004' || statusCode === 'PENDING' || statusCode === 'QUEUED';
     
     let finalStatus;
     if (isSuccess) {
       finalStatus = 'success';
     } else if (isQueued) {
       finalStatus = 'pending';
+      //  finalStatus = 'success';
     } else {
       finalStatus = 'failed';
     }
 
     console.log(`[DMT] Final status determined: ${finalStatus}`);
 
-    // 12. Update status based on provider result
-    if (isSuccess || isQueued) {
-      // ✅ Store UTR and provider reference
-      await db.query(
-        `UPDATE dmt_transactions 
-         SET status = $1, 
-             provider_txn_id = $2, 
-             utr_number = $3,
-             raw_response = $4,
-             updated_at = NOW()
-         WHERE iyda_txn_id = $5`,
-        [finalStatus, providerRefId || null, utrValue, JSON.stringify(providerResult), iydaTxnId]
-      );
+   // 12. Update status based on provider result
+if (isSuccess || isQueued) {
+  // ✅ Store UTR and provider reference
+  await db.query(
+    `UPDATE dmt_transactions 
+     SET status = $1, 
+         provider_txn_id = $2, 
+         utr_number = $3,
+         raw_response = $4,
+         updated_at = NOW()
+     WHERE iyda_txn_id = $5`,
+    [finalStatus, providerRefId || null, utrValue, JSON.stringify(providerResult), iydaTxnId]
+  );
 
-      await logProviderCall({
-        merchantRefId: iydaTxnId, providerId: DMT_PROVIDER_ID, module: 'dmt',
-        transactionType: 'transfer', requestPayload: providerPayload,
-        responsePayload: providerResult, status: statusCode,
-        errorMessage: null, httpStatus: 200, responseTimeMs, finalStatus
-      });
+  await logProviderCall({
+    merchantRefId: iydaTxnId, providerId: DMT_PROVIDER_ID, module: 'dmt',
+    transactionType: 'transfer', requestPayload: providerPayload,
+    responsePayload: providerResult, status: statusCode,
+    errorMessage: null, httpStatus: 200, responseTimeMs, finalStatus
+  });
 
-      // ✅ Commission crediting (only on immediate success, not on queued)
-      if (isSuccess) {
-        try {
-          const serviceType = productType === 'lite' ? 'dmt' : 'dmt_smart';
-          await commissionService.processCommission(serviceType, amount, userId, {
-            subType: 'transfer', transactionRef: iydaTxnId
-          });
-          await db.query(
-            `UPDATE dmt_transactions SET commission_credited = TRUE WHERE iyda_txn_id = $1`,
-            [iydaTxnId]
-          );
-          debug.log('COMMISSION_CREDITED', { serviceType, amount });
-        } catch (commErr) {
-          console.error('Commission crediting failed (non‑blocking):', commErr);
-        }
-      }
+  // ✅ Commission is now handled ONLY by webhook
+  // Commented out to avoid double-crediting
+  // if (isSuccess || isQueued) {
+  //   try {
+  //     const serviceType = productType === 'lite' ? 'dmt' : 'dmt_smart';
+  //     await commissionService.processCommission(serviceType, amount, userId, {
+  //       subType: 'transfer', transactionRef: iydaTxnId
+  //     });
+  //     await db.query(
+  //       `UPDATE dmt_transactions SET commission_credited = TRUE WHERE iyda_txn_id = $1`,
+  //       [iydaTxnId]
+  //     );
+  //   } catch (commErr) {
+  //     console.error('Commission crediting failed (non‑blocking):', commErr);
+  //   }
+  // }
 
-      return { 
-        success: true, 
-        transactionId: iydaTxnId, 
-        utrNumber: utrValue,
-        providerStatus: statusCode,
-        message: responseMessage || (isSuccess ? 'Transfer successful' : 'Transfer queued for processing')
-      };
-      
-    } else {
-      // Provider failure
-      await db.query(
-        `UPDATE dmt_transactions 
-         SET status = 'failed', 
-             failure_reason = $1, 
-             raw_response = $2,
-             updated_at = NOW()
-         WHERE iyda_txn_id = $3`,
-        [responseMessage || 'Provider rejected', JSON.stringify(providerResult), iydaTxnId]
-      );
+  // ✅ Return ALL details including surcharge
+  return { 
+    success: true, 
+    transactionId: iydaTxnId, 
+    utrNumber: utrValue,
+    providerStatus: statusCode,
+    message: responseMessage || (isSuccess ? 'Transfer successful' : 'Transfer queued for processing'),
+    surcharge: surcharge,      // ✅ Added - processing fee
+    totalDebit: totalDebit,    // ✅ Added - amount + surcharge
+    transferAmount: amount     // ✅ Added - original transfer amount
+  };
+  
+} else {
+  // Provider failure
+  await db.query(
+    `UPDATE dmt_transactions 
+     SET status = 'failed', 
+         failure_reason = $1, 
+         raw_response = $2,
+         updated_at = NOW()
+     WHERE iyda_txn_id = $3`,
+    [responseMessage || 'Provider rejected', JSON.stringify(providerResult), iydaTxnId]
+  );
 
-      await logProviderCall({
-        merchantRefId: iydaTxnId, providerId: DMT_PROVIDER_ID, module: 'dmt',
-        transactionType: 'transfer', requestPayload: providerPayload,
-        responsePayload: providerResult, status: statusCode,
-        errorMessage: responseMessage || 'Provider rejected',
-        httpStatus: 200, responseTimeMs, finalStatus: 'failed'
-      });
+  await logProviderCall({
+    merchantRefId: iydaTxnId, providerId: DMT_PROVIDER_ID, module: 'dmt',
+    transactionType: 'transfer', requestPayload: providerPayload,
+    responsePayload: providerResult, status: statusCode,
+    errorMessage: responseMessage || 'Provider rejected',
+    httpStatus: 200, responseTimeMs, finalStatus: 'failed'
+  });
 
-      await rollbackFailedTransfer(userId, amount, totalDebit, remitterId, iydaTxnId, responseMessage);
-      throw new Error(responseMessage || 'Provider transfer failed');
-    }
+  await rollbackFailedTransfer(userId, amount, totalDebit, remitterId, iydaTxnId, responseMessage);
+  throw new Error(responseMessage || 'Provider transfer failed');
+}
 
-  } catch (error) {
-    debug.error('TRANSACTION_ERROR', error);
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
+} catch (error) {
+  debug.error('TRANSACTION_ERROR', error);
+  await client.query('ROLLBACK');
+  throw error;
+} finally {
+  client.release();
+}
 }
 
 /**

@@ -22,7 +22,7 @@ router.post('/login', login);
 
 
 router.post('/forgot-password', forgotPassword);
-router.post('/reset-password', resetPassword);
+router.post('/reset-password', protect, resetPassword);
 // Cache token in DB — reuse if fresh (tokens typically valid ~1 hour)
 router.post('/token', async (req, res) => {
   try {

@@ -219,17 +219,51 @@ async function getMyPayoutTransactions(req, res, next) {
     const userId = req.user.id;
     const { status, from, to } = req.query;
 
+    // Validate date formats if provided
+    if (from && isNaN(Date.parse(from))) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid "from" date format. Please use ISO 8601 format (YYYY-MM-DD)'
+      });
+    }
+
+    if (to && isNaN(Date.parse(to))) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid "to" date format. Please use ISO 8601 format (YYYY-MM-DD)'
+      });
+    }
+
+    // Validate status if provided
+    const validStatuses = ['pending', 'processing', 'success', 'failed', 'cancelled'];
+    if (status && !validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid status. Allowed values: ${validStatuses.join(', ')}`
+      });
+    }
+
+    // Fetch user details (business_name and phone)
+    const userResult = await db.query(
+      'SELECT business_name, phone FROM users WHERE id = $1',
+      [userId]
+    );
+
+    const userDetails = userResult.rows[0] || {};
+
     let query = `
       SELECT id, amount, payout_charge, total_deduction, transfer_mode, status, 
              merchant_ref_id, provider_ref_id,
              bank_ref_no, failure_reason, 
              bene_account_name, bene_account_number, bene_ifsc,
-             created_at, updated_at
+             created_at, updated_at,
+             $1::text as business_name,
+             $2::text as phone
       FROM payout_transactions
-      WHERE user_id = $1 AND wallet_source = 'aeps'
+      WHERE user_id = $3 AND wallet_source = 'aeps'
     `;
-    const params = [userId];
-    let paramIndex = 2;
+    const params = [userDetails.business_name || null, userDetails.phone || null, userId];
+    let paramIndex = 4;
 
     if (status) {
       query += ` AND status = $${paramIndex}`;
@@ -250,12 +284,60 @@ async function getMyPayoutTransactions(req, res, next) {
     query += ` ORDER BY created_at DESC`;
 
     const result = await db.query(query, params);
-    res.json(result.rows);
+
+    // Check if no transactions found
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'No payout transactions found for the specified criteria'
+      });
+    }
+
+    // Calculate summary statistics
+    const totalAmount = result.rows.reduce((sum, row) => sum + parseFloat(row.amount), 0);
+    const totalDeduction = result.rows.reduce((sum, row) => sum + parseFloat(row.total_deduction || 0), 0);
+    const totalPayoutCharge = result.rows.reduce((sum, row) => sum + parseFloat(row.payout_charge || 0), 0);
+
+    // Group by status for summary
+    const statusSummary = result.rows.reduce((acc, row) => {
+      acc[row.status] = (acc[row.status] || 0) + 1;
+      return acc;
+    }, {});
+
+    res.status(200).json({
+      success: true,
+      data: result.rows,
+      user: {
+        business_name: userDetails.business_name || null,
+        phone: userDetails.phone || null
+      },
+      summary: {
+        total_transactions: result.rows.length,
+        total_amount: parseFloat(totalAmount.toFixed(2)),
+        total_deduction: parseFloat(totalDeduction.toFixed(2)),
+        total_payout_charge: parseFloat(totalPayoutCharge.toFixed(2)),
+        status_breakdown: statusSummary
+      },
+      filters_applied: {
+        status: status || null,
+        from: from || null,
+        to: to || null
+      }
+    });
   } catch (err) {
+    console.error('Error fetching payout transactions:', err);
+    
+    // Handle specific database errors
+    if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
+      return res.status(503).json({
+        success: false,
+        error: 'Database connection error. Please try again later.'
+      });
+    }
+
     next(err);
   }
 }
-
 /**
  * GET /api/payout/admin/transactions
  * Admin view - all agents' payout transactions

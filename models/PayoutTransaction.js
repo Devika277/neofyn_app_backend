@@ -7,7 +7,7 @@ static async create(data) {
         user_id, merchant_ref_id, amount, beneficiary_bank, payment_purpose,
         payment_mode, beneficiary_account_number, beneficiary_ifsc,
         beneficiary_mobile, beneficiary_name, beneficiary_location,
-        lat, long, udf1, udf2, udf3
+        lat, long, udf1, udf2, udf3, device_type = 'app'
     } = data;
 
     const sql = `
@@ -15,8 +15,8 @@ static async create(data) {
         (user_id, merchant_ref_id, amount, beneficiary_bank, payment_purpose,
          payment_mode, beneficiary_account_number, beneficiary_ifsc,
          beneficiary_mobile, beneficiary_name, beneficiary_location,
-         lat, long, udf1, udf2, udf3, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'QUEUED')
+         lat, long, udf1, udf2, udf3, device_type, status)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'QUEUED')
         RETURNING id
     `;
     const params = [
@@ -35,7 +35,8 @@ static async create(data) {
         long || '77.1025',            // $13
         udf1 || null,                 // $14
         udf2 || null,                 // $15
-        udf3 || null,                 // $16  ← was missing
+        udf3 || null,                 // $16
+        device_type,                   // $17
     ];
 
     const result = await pool.query(sql, params);

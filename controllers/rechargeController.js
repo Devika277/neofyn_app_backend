@@ -103,23 +103,83 @@ class RechargeController {
         }
     }
 
-    async getUserHistory(req, res) {
-        try {
-            const userId = req.user.id;
-            const limit = parseInt(req.query.limit) || 50;
-            const offset = parseInt(req.query.offset) || 0;
-            const history = await rechargeService.getUserHistory(userId, limit, offset);
-            return res.status(200).json({
-                success: true,
-                data: history,
-                pagination: { limit, offset, count: history.length }
-            });
-        } catch (error) {
-            logger.error('RechargeController: Error fetching user history', { error: error.message });
-            return res.status(500).json({ success: false, error: 'Failed to fetch recharge history' });
-        }
-    }
+   async getUserHistory(req, res) {
+    try {
+        const userId = req.user.id;
+        const limit = parseInt(req.query.limit) || 50;
+        const offset = parseInt(req.query.offset) || 0;
 
+        // Validate limit and offset
+        if (limit < 1 || limit > 100) {
+            return res.status(400).json({
+                success: false,
+                error: 'Limit must be between 1 and 100'
+            });
+        }
+
+        if (offset < 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'Offset must be greater than or equal to 0'
+            });
+        }
+
+        const history = await rechargeService.getUserHistory(userId, limit, offset);
+
+        // Check if history exists
+        if (!history || history.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'No recharge history found'
+            });
+        }
+
+        // Fetch user details (business_name and phone)
+        const user = await db.query(
+            'SELECT business_name, phone FROM users WHERE id = $1',
+            [userId]
+        );
+
+        const userDetails = user.rows[0] || {};
+
+        // Enhance history data with user details
+        const enhancedHistory = history.map(record => ({
+            ...record,
+            business_name: userDetails.business_name || null,
+            phone: userDetails.phone || null
+        }));
+
+        return res.status(200).json({
+            success: true,
+            data: enhancedHistory,
+            pagination: {
+                limit,
+                offset,
+                count: enhancedHistory.length,
+                hasMore: enhancedHistory.length === limit
+            }
+        });
+    } catch (error) {
+        logger.error('RechargeController: Error fetching user history', { 
+            error: error.message,
+            stack: error.stack,
+            userId: req.user?.id
+        });
+        
+        // Handle specific database errors
+        if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+            return res.status(503).json({
+                success: false,
+                error: 'Database connection error. Please try again later.'
+            });
+        }
+
+        return res.status(500).json({ 
+            success: false, 
+            error: 'Failed to fetch recharge history. Please try again later.' 
+        });
+    }
+}
     async getAllRecharges(req, res) {
         try {
             const limit = parseInt(req.query.limit) || 50;

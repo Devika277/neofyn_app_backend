@@ -61,12 +61,21 @@ class RechargeService {
 
             // Insert pending transaction
             const insertResult = await client.query(
-                `INSERT INTO transactions
-                 (user_id, type, mobile, operator, plan_amount, status, idempotency_key)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                 RETURNING id`,
-                [userId, 'MOBILE_RECHARGE', mobile, operator, amount, 'pending', idempotencyKey || null]
-            );
+                  `INSERT INTO transactions
+                    (user_id, type, mobile, operator, plan_amount, status, idempotency_key, device_type)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING id`,
+                    [
+                        userId, 
+                        'MOBILE_RECHARGE', 
+                        mobile, 
+                        operator, 
+                        amount, 
+                        'pending', 
+                        idempotencyKey || null,
+                        'app'  // ✅ Added device_type
+                    ]
+                    );
             transactionId = insertResult.rows[0].id;
             merchantRefId = transactionId.toString();
 

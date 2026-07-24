@@ -7,22 +7,19 @@ const masterRoutes = require('./routes/master');
 const merchantRoutes = require('./routes/merchant');
 const aepsRoutes = require('./routes/aepsRoutes');  // Add AEPS routes
 const payoutRoutes = require('./routes/payoutRoutes'); // ADD THIS LINE
-// Import the commission routes
 const commissionRoutes = require('./routes/commissionRoutes');
 const fundRoutes = require('./routes/fundRoutes');
+const pool = require('./config/db.js');
 
 const app = express();
 
 // ========== MIDDLEWARE ==========
 // Parse JSON bodies
 app.use(express.json({ limit: '10mb' }));
-
 // Parse URL-encoded bodies (for form data)
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
 // CORS
 app.use(cors());
-
 // Request logging middleware
 app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
@@ -54,19 +51,12 @@ app.get('/', (req, res) => res.json({
         aeps: "/api/aeps",
         payout: "/api/payout",
         wallet: "/api/wallet",
-
-        
-
     }
 }));
 
 app.use('/api/wallet', require('./routes/walletRoutes')); // ← ADD THIS
 app.use('/api/beneficiary', require('./routes/beneficiaryRoutes'));
-
-
-// Existing Routes
 app.use('/api/auth', authRoutes);
-// ========== DMT WEBHOOK LOGGING ==========
 app.use('/api/payout/callback', (req, res, next) => {
 
   console.log('🔔 DMT CALLBACK HIT');
@@ -75,30 +65,19 @@ app.use('/api/payout/callback', (req, res, next) => {
   console.log('Method:', req.method);
   console.log('Headers:', JSON.stringify(req.headers, null, 2));
   console.log('Body:', JSON.stringify(req.body, null, 2));
-
   next();
-
 });
 app.use('/api/dmt', dmtRoutes);
 app.use('/api/master', masterRoutes);
 app.use('/api/merchant', merchantRoutes);
 app.use('/api/fund', fundRoutes);
-
 app.use('/api/states', require('./routes/bbpsStates.js'));
-
 app.use('/api/recharge', require('./routes/rechargeRoutes'));
 app.use('/api/bbps', require('./routes/bbpsRoutes'));
 app.use('/api/payments', require('./routes/paymentRoutes'));
 app.use('/api/commission', commissionRoutes);
-
-
-// NEW: AEPS Routes
-
 app.use('/api/aeps', aepsRoutes);
-
-// app.use('/api/aepsapi', aepsRoutes); // This makes the endpoint: /api/aepsapi/2fa
-
-app.use('/api/payout', payoutRoutes); // ADD THIS LINE
+app.use('/api/payout', payoutRoutes);
 
 // ========== 404 HANDLER ==========
 // This should be AFTER all routes
@@ -135,7 +114,7 @@ console.log('   - /api/beneficiary');
 
 // ========== START SERVER ==========
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {  // Changed this line to store server reference
     console.log(`✅ Neofyn Backend running on port http://0.0.0.0:${PORT}`);
     console.log(`📍 Access URL: http://0.0.0.0:${PORT}`);
     console.log(`📋 Available endpoints:`);
@@ -143,5 +122,42 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`   - AEPS: http://0.0.0.0:${PORT}/api/aeps`);
     console.log(`   - Banks: http://0.0.0.0:${PORT}/api/aeps/banks`);
     console.log(`   - Payout: http://0.0.0.0:${PORT}/api/payout`); // ADD THIS LINE
-
 });
+
+// ========== SERVER CONFIGURATION ==========
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
+
+// ========== UNHANDLED REJECTION HANDLERS ==========
+process.on('unhandledRejection', (err) => {
+  console.error('UNHANDLED REJECTION:', err);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+});
+
+// ========== GRACEFUL SHUTDOWN ==========
+// Graceful shutdown — closes HTTP server then releases DB pool
+async function gracefulShutdown(signal) {
+  console.log(`[${signal}] Signal received — starting graceful shutdown...`);
+  server.close(async () => {
+    try {
+      await pool.end();
+      console.log('[shutdown] Pool closed. Exiting.');
+      process.exit(0);
+    } catch (err) {
+      console.error('[shutdown] Error closing pool:', err);
+      process.exit(1);
+    }
+  });
+  // Force exit if graceful shutdown takes longer than 10 seconds
+  setTimeout(() => {
+    console.error('[shutdown] Forced exit after timeout');
+    process.exit(1);
+  }, 10000).unref();
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGUSR2', () => gracefulShutdown('SIGUSR2'));

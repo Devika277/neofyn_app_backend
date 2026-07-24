@@ -181,20 +181,21 @@ class PaymentService {
     }
 
     const insertResult = await client.query(
-      `INSERT INTO transactions 
-       (user_id, type, consumer_number, plan_amount, status, idempotency_key, api_response) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) 
-       RETURNING id`,
-      [
-        userId,
-        serviceType, // Already normalized
-        customerId,
-        0,
-        'pending',
-        idempotencyKey,
-        JSON.stringify({ step: 'fetch', fetchBillResult: fetchResult }),
-      ]
-    );
+  `INSERT INTO transactions 
+   (user_id, type, consumer_number, plan_amount, status, idempotency_key, api_response, device_type) 
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+   RETURNING id`,
+  [
+    userId,
+    serviceType, // Already normalized
+    customerId,
+    0,
+    'pending',
+    idempotencyKey,
+    JSON.stringify({ step: 'fetch', fetchBillResult: fetchResult }),
+    'app'  // ✅ Added device_type
+  ]
+);
     const transactionId = insertResult.rows[0].id;
 
     if (fetchResult.fetchRefId) {

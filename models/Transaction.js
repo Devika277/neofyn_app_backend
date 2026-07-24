@@ -10,8 +10,8 @@ class TransactionModel {
                 transaction_id, merchant_ref_id, merchant_id, service_type,
                 amount, aadhaar_number, bank_code, bank_name, status,
                 status_description, rrn, npci_code, npci_message,
-                available_balance, response_data
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                available_balance, response_data, device_type
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT (transaction_id) DO UPDATE SET
                 status = EXCLUDED.status,
                 status_description = EXCLUDED.status_description,
@@ -34,7 +34,8 @@ class TransactionModel {
             transactionData.npciCode,
             transactionData.npciMessage,
             transactionData.availableBalance,
-            JSON.stringify(transactionData.responseData)
+            JSON.stringify(transactionData.responseData),
+            transactionData.deviceType || 'app'  // ✅ Added device_type
         ];
 
         const result = await pool.query(query, values);

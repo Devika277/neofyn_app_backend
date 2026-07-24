@@ -915,7 +915,41 @@ class AepsController {
             });
         }
     }
+// =====================================================
+// 2FA STATUS - Check if 2FA is done today
+// =====================================================
+/**
+ * Check if 2FA is completed today for a user
+ * GET /api/aeps/2fa/status/:userId
+ */
+async check2FAStatus(req, res) {
+    try {
+        const { userId } = req.params;
 
+        // Authorization check
+        if (req.user.id !== parseInt(userId) && req.user.role !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                message: 'You do not have permission to check this 2FA status'
+            });
+        }
+
+        const data = await aepsService.check2FAStatus(userId);
+
+        return res.json({
+            success: true,
+            data: data
+        });
+
+    } catch (error) {
+        console.error('[AEPS-CTRL] check2FAStatus error:', error.message);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to check 2FA status',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+}
     // =====================================================
     // MERCHANT PROFILE - Get by Specific Pipe
     // =====================================================

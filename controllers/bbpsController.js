@@ -198,41 +198,115 @@ class PaymentController {
      *   - endDate   (YYYY-MM-DD)
      *   - limit, offset
      */
-    async getUserHistory(req, res) {
-        try {
-            const userId = req.user.id;
-            const serviceType = req.query.serviceType || null;
-            const startDate = req.query.startDate || null;
-            const endDate = req.query.endDate || null;
-            const limit = parseInt(req.query.limit) || 50;
-            const offset = parseInt(req.query.offset) || 0;
+ async getUserHistory(req, res) {
+    try {
+        const userId = req.user.id;
+        const serviceType = req.query.serviceType || null;
+        const startDate = req.query.startDate || null;
+        const endDate = req.query.endDate || null;
+        const limit = parseInt(req.query.limit) || 50;
+        const offset = parseInt(req.query.offset) || 0;
 
-            const history = await paymentService.getUserHistory(
-                userId,
-                serviceType,
-                startDate,
-                endDate,
-                limit,
-                offset
-            );
-
-            return res.status(200).json({
-                success: true,
-                data: history,
-                pagination: {
-                    limit,
-                    offset,
-                    count: history.length
-                }
-            });
-        } catch (error) {
-            logger.error('PaymentController: Error fetching user history', { error: error.message });
-            return res.status(500).json({
+        // Validate date format if provided
+        if (startDate && isNaN(Date.parse(startDate))) {
+            return res.status(400).json({
                 success: false,
-                error: 'Failed to fetch payment history'
+                error: 'Invalid startDate format. Please use ISO 8601 format (YYYY-MM-DD)'
             });
         }
+
+        if (endDate && isNaN(Date.parse(endDate))) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid endDate format. Please use ISO 8601 format (YYYY-MM-DD)'
+            });
+        }
+
+        // Validate limit and offset
+        if (limit < 1 || limit > 100) {
+            return res.status(400).json({
+                success: false,
+                error: 'Limit must be between 1 and 100'
+            });
+        }
+
+        if (offset < 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'Offset must be greater than or equal to 0'
+            });
+        }
+
+        const history = await paymentService.getUserHistory(
+            userId,
+            serviceType,
+            startDate,
+            endDate,
+            limit,
+            offset
+        );
+
+        // Check if history exists
+        if (!history || history.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'No payment history found for the specified criteria'
+            });
+        }
+
+        // Fetch user details (business_name and phone)
+        const user = await db.query(
+            'SELECT business_name, phone FROM users WHERE id = $1',
+            [userId]
+        );
+
+        const userDetails = user.rows[0] || {};
+
+        // Enhance history data with user details
+        const enhancedHistory = history.map(record => ({
+            ...record,
+            business_name: userDetails.business_name || null,
+            phone: userDetails.phone || null
+        }));
+
+        return res.status(200).json({
+            success: true,
+            data: enhancedHistory,
+            pagination: {
+                limit,
+                offset,
+                count: enhancedHistory.length,
+                hasMore: enhancedHistory.length === limit
+            }
+        });
+    } catch (error) {
+        logger.error('PaymentController: Error fetching user history', { 
+            error: error.message,
+            stack: error.stack,
+            userId: req.user?.id
+        });
+        
+        // Handle specific database/service errors
+        if (error.message.includes('serviceType')) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid service type provided'
+            });
+        }
+
+        if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+            return res.status(503).json({
+                success: false,
+                error: 'Database connection error. Please try again later.'
+            });
+        }
+
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to fetch payment history. Please try again later.'
+        });
     }
+}
 
     /**
      * GET /api/payments/transaction/:id
